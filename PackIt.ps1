@@ -82,7 +82,7 @@ try {
 
     # Run IntuneWinAppUtil.exe silently
     Write-Host "Packaging with IntuneWinAppUtil.exe..." -ForegroundColor Green
-    & $intuneWinAppUtil -c $sourceDir -s $installBat -o $outputDir | Out-Null
+    & $intuneWinAppUtil -c $sourceDir -s $installBat -o $outputDir
 
     # Move and rename the generated file
     $generatedFile = Join-Path -Path $outputDir -ChildPath "Install.intunewin"
