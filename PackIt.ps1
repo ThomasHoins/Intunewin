@@ -272,7 +272,7 @@ $filesToUpload = Get-ChildItem $IntuneWinFile -Recurse -File
             $targetPath = ($x.fullname.Substring($sourceFileRootDirectory.Length + 1)).Replace("\", "/")
 
             Write-Verbose "Uploading $("\" + $x.fullname.Substring($sourceFileRootDirectory.Length + 1)) to $($container.CloudBlobContainer.Uri.AbsoluteUri + "/" + $AzBlobUri)"
-            Set-AzureStorageBlobContent -File $x.fullname -Container $container.Name -Blob $AzBlobUri -Force:$Force | Out-Null
+            Set-AzureStorageBlobContent -File $x.fullname -Blob $AzBlobUri
         }
 
 # Script Header
