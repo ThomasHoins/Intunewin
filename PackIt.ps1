@@ -14,6 +14,13 @@
     Changes:        14.01.2025 Added error handling, clean outputs, and timestamp-based renaming.
     Changes:        14.01.2025 Automatic download of IntuneWinAppUtil.exe, auto-exit after 10 seconds.
 
+    https://learn.microsoft.com/en-us/graph/api/intune-apps-win32lobapp-create?view=graph-rest-1.0&tabs=http
+    https://github.com/microsoftgraph/powershell-intune-samples
+    https://github.com/MSEndpointMgr/IntuneWin32App/blob/master/Public/Get-IntuneWin32AppMetaData.ps1
+    https://github.com/microsoftgraph/powershell-intune-samples/blob/master/LOB_Application/Win32_Application_Add.ps1#L852
+    https://ourcloudnetwork.com/how-to-use-invoke-mggraphrequest-with-powershell/
+    https://developer.microsoft.com/en-us/graph/graph-explorer
+
 .LINK
     [Your Documentation or GitHub Link Here]
 
@@ -51,6 +58,61 @@ If (-Not($OutputDir)){$OutputDir="$PSScriptRoot\Output"}
 
 #------------------------ Functions ------------------------
 #===========================================================
+function Get-IntuneWinMetadata{
+    <#
+    .SYNOPSIS
+        Retrieves meta data from the detection.xml file inside the packaged Win32 application .intunewin file.
+
+    .DESCRIPTION
+        Retrieves meta data from the detection.xml file inside the packaged Win32 application .intunewin file.
+
+    .PARAMETER FilePath
+        Specify an existing local path to where the Win32 app .intunewin file is located.
+
+    .EXAMPLE
+        Get-IntuneWinMetadata -FilePath "somePath\BlaBla.intunewin"
+    .NOTES
+        shortened version of 
+        https://github.com/MSEndpointMgr/IntuneWin32App/blob/master/Public/Get-IntuneWin32AppMetaData.ps1
+    #>
+
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$FilePath
+    )
+    if (Test-Path -Path $FilePath) {
+        # Check if file extension is intunewin
+        if (([System.IO.Path]::GetExtension((Split-Path -Path $FilePath -Leaf))) -ne ".intunewin") {
+            throw "Given file name '$(Split-Path -Path $FilePath -Leaf)'contains an unsupported file extension. Supported extension is '.intunewin'"
+        }
+    }
+    else {
+        throw "File or folder does not exist"
+    }
+    $null = Add-Type -AssemblyName "System.IO.Compression.FileSystem" -ErrorAction Stop -Verbose:$false
+    try {
+        $IntuneWin32AppFile = [System.IO.Compression.ZipFile]::OpenRead($FilePath)
+        if ($null -ne $IntuneWin32AppFile) {
+            $DetectionXMLFile = $IntuneWin32AppFile.Entries | Where-Object { $_.Name -like "detection.xml" }
+            $FileStream = $DetectionXMLFile.Open()
+
+            # Construct new stream reader, pass file stream and read XML content to the end of the file
+            $StreamReader = New-Object -TypeName "System.IO.StreamReader" -ArgumentList $FileStream -ErrorAction Stop
+            $DetectionXMLContent = [xml]($StreamReader.ReadToEnd())
+            
+            # Close and dispose objects to preserve memory usage
+            $FileStream.Close()
+            $StreamReader.Close()
+            $IntuneWin32AppFile.Dispose()
+
+            # Handle return value with XML content from detection.xml
+            return $DetectionXMLContent
+        }
+    }
+    catch [System.Exception] {
+        Write-Warning -Message "An error occurred while reading application information from detection.xml file. Error message: $($_.Exception.Message)"
+    }
+}
 
 function New-IntuneWin32App {
     <#
@@ -93,12 +155,17 @@ $displayName = ($installCmdString -match "DESCRIPTION").Replace("REM DESCRIPTION
 $publisher = ($installCmdString -match "MANUFACTURER").Replace("REM MANUFACTURER","").Trim()
 $fileName = ($installCmdString -match "FILENAME").Replace("REM FILENAME","").Trim()
 $version = ($installCmdString -match "VERSION").Replace("REM VERSION","").Trim()
-$Icon= [System.Convert]::ToBase64String([System.IO.File]::ReadAllBytes("$($Iconpath)"))
+# [System.Convert]::ToBase64String([System.IO.File]::ReadAllBytes("$($Iconpath)"))
+$Icon = @{
+    "@odata.type" = "microsoft.graph.mimeContent"
+    type= "image/png"
+    value= [System.IO.File]::ReadAllBytes($Iconpath)  
+    }
 $Description = $(get-childitem $SourceDir -Filter "Description*" | get-content -Encoding UTF8 |Out-String)
-#$size= ((get-item( $AppPath)).Length).ToString()
+$IntuneWinMetadata = Get-IntuneWinMetadata -FilePath $AppPath
 If(($installCmdString -match "msiexec").Count -gt 0){
     $MSIName = (get-childitem $SourceDir -Filter "*.msi")[0].FullName
-    $MSIProductCode = (Get-AppLockerFileInformation $MSIName |select -ExpandProperty Publisher).BinaryName
+    $MSIProductCode = (Get-AppLockerFileInformation $MSIName |Select-Object -ExpandProperty Publisher).BinaryName
     $Rule=@{
         "@odata.type"= "#microsoft.graph.win32LobAppProductCodeRule"
         ruleType= "detection"
@@ -129,15 +196,15 @@ $params = @{
     installCommandLine = $installCmd
     uninstallCommandLine = $uninstallCmd
     applicableArchitectures = "x64"
-    setupFilePath = $installCmd
-    fileName = Split-Path($AppPath) -Leaf
+    setupFilePath = $IntuneWinMetadata.ApplicationInfo.SetupFile
+    fileName = $IntuneWinMetadata.ApplicationInfo.FileName
+    #size = [int]$IntuneWinMetadata.ApplicationInfo.UnencryptedContentSize
     publishingState = "notPublished"
     msiInformation = $null
     runAs32bit = $false
-	largeIcon = @{
-		type = "image/png"
-		value = $Icon
-	}
+	largeIcon = @(
+        $Icon
+	)
     rules = @(
         $Rule
     )
@@ -148,7 +215,23 @@ $params = @{
 	}
 
 }
-New-MgDeviceAppManagementMobileApp -BodyParameter $params
+
+$MobileAppID = (New-MgDeviceAppManagementMobileApp -BodyParameter $params).Id
+$Size = [int64]$IntuneWinMetadata.ApplicationInfo.UnencryptedContentSize
+#Upload File
+$fileBody =  @{ 
+    "@odata.type" = "#microsoft.graph.mobileAppContentFile"
+    name = $AppPath
+    size = $Size
+    sizeEncrypted =  (Get-Item $AppPath).Length
+    manifest = $null
+    isDependency = $false
+}
+
+$filesUri = "https://graph.microsoft.com/beta/deviceAppManagement/mobileApps/$appId/microsoft.graph.win32LobApp/contentVersions/1/files";
+
+$file = Invoke-MgGraphRequest  -Method "POST" $filesUri -Body ConvertTo-Json($fileBody)
+
 }
 
 
@@ -160,7 +243,7 @@ Write-Host ""
 
 # Define paths
 
-$intuneWinAppUtil = Join-Path -Path $PSScriptRoot -ChildPath "IntuneWinAppUtil.exe"
+$intuneWinAppUtil = "$PSScriptRoot\IntuneWinAppUtil.exe"
 
 # URL to download IntuneWinAppUtil.exe
 $downloadUrl = "https://github.com/microsoft/Microsoft-Win32-Content-Prep-Tool/raw/master/IntuneWinAppUtil.exe"
@@ -226,6 +309,14 @@ Write-Host "==========================================" -ForegroundColor Green
 Write-Host "intunewin generated successfully!" -ForegroundColor Green
 Write-Host "==========================================" -ForegroundColor Green
 
+Disconnect-MgGraph
+$TenantID = "22c3b957-8768-4139-8b5e-279747e3ecbf"
+$AppId = "3997b08b-ee9c-4528-9afd-dfccb3ef2535"
+$AppSecret = "u9D8Q~HX31tRrc-tPwojE02g8OvcP4VqSz5H2a7p"
+# Connect to Microsoft Graph Using the Tenant ID and Client Secret Credential
+$SecureClientSecret = ConvertTo-SecureString -String $AppSecret -AsPlainText -Force
+$ClientSecretCredential = New-Object -TypeName System.Management.Automation.PSCredential -ArgumentList $AppId, $SecureClientSecret
+Connect-MgGraph -TenantId $TenantID -ClientSecretCredential $ClientSecretCredential
 
 New-IntuneWin32App -AppPath $renamedFile -SourceDir $sourceDir
 exit 0
