@@ -21,6 +21,10 @@
     https://ourcloudnetwork.com/how-to-use-invoke-mggraphrequest-with-powershell/
     https://developer.microsoft.com/en-us/graph/graph-explorer
 
+    Modules:
+    Microsoft.Graph.Authentication 
+    Microsoft.Graph.Devices.CorporateManagement
+
 .LINK
     [Your Documentation or GitHub Link Here]
 
@@ -46,7 +50,7 @@
 #>
 param (
     [Parameter(Mandatory = $false)]
-    [string]$SourceDir = "C:\Intunewin\Don Ho_Notepad++_8.7.5_MUI",
+    [string]$SourceDir = "C:\Intunewin\keepassxc.org_KeePassXC_2.79_MUI",
 
     [Parameter(Mandatory = $false)]
     [string]$outputDir="C:\Intunewin\Output",
@@ -151,10 +155,10 @@ $Iconpath = "$SourceDir\$IconName"
 $installCmd = "install.bat"
 $uninstallCmd = "uninstall.bat"
 $installCmdString= get-content "$SourceDir\$installCmd"
-$displayName = ($installCmdString -match "DESCRIPTION").Replace("REM DESCRIPTION","").Trim()
-$publisher = ($installCmdString -match "MANUFACTURER").Replace("REM MANUFACTURER","").Trim()
-$fileName = ($installCmdString -match "FILENAME").Replace("REM FILENAME","").Trim()
-$version = ($installCmdString -match "VERSION").Replace("REM VERSION","").Trim()
+$displayName = ($installCmdString -match "DESCRIPTION").Replace("REM DESCRIPTION","")[0].Trim()
+$publisher = ($installCmdString -match "MANUFACTURER").Replace("REM MANUFACTURER","")[0].Trim()
+$fileName = ($installCmdString -match "FILENAME").Replace("REM FILENAME","")[0].Trim()
+$version = ($installCmdString -match "VERSION").Replace("REM VERSION","")[0].Trim()
 # [System.Convert]::ToBase64String([System.IO.File]::ReadAllBytes("$($Iconpath)"))
 $Icon = @{
     "@odata.type" = "microsoft.graph.mimeContent"
@@ -228,9 +232,8 @@ $fileBody =  @{
     isDependency = $false
 }
 
-$filesUri = "https://graph.microsoft.com/beta/deviceAppManagement/mobileApps/$appId/microsoft.graph.win32LobApp/contentVersions/1/files";
+$file = New-MgDeviceAppManagementMobileAppAsWin32LobAppContentVersionFile -MobileAppId $appId -BodyParameter (ConvertTo-Json($fileBody))
 
-$file = Invoke-MgGraphRequest  -Method "POST" $filesUri -Body ConvertTo-Json($fileBody)
 
 }
 
