@@ -62,6 +62,30 @@ If (-Not($OutputDir)){$OutputDir="$PSScriptRoot\Output"}
 
 #------------------------ Functions ------------------------
 #===========================================================
+
+Function Get-IntuneWinFile{
+    param(
+    [Parameter(Mandatory=$true)]
+    $SourceFile,
+    [Parameter(Mandatory=$true)]
+    $fileName
+    )
+
+    $Folder = "win32"
+    $Directory = [System.IO.Path]::GetDirectoryName("$SourceFile")
+    if(-not(Test-Path "$Directory\$folder")){
+        New-Item -ItemType Directory -Path "$Directory" -Name "$folder" | Out-Null
+    }
+
+    Add-Type -Assembly System.IO.Compression.FileSystem
+    $zip = [IO.Compression.ZipFile]::OpenRead("$SourceFile")
+    $zip.Entries | Where-Object {$_.Name -like "$filename" } | ForEach-Object {
+        [System.IO.Compression.ZipFileExtensions]::ExtractToFile($_, "$Directory\$folder\$filename", $true)
+        }
+    $zip.Dispose()
+    return "$Directory\$folder\$filename"
+}
+
 function Get-IntuneWinMetadata{
     <#
     .SYNOPSIS
@@ -232,11 +256,24 @@ $fileBody =  @{
     isDependency = $false
 }
 
-$file = New-MgDeviceAppManagementMobileAppAsWin32LobAppContentVersionFile -MobileAppId $appId -BodyParameter (ConvertTo-Json($fileBody))
+$file = New-MgDeviceAppManagementMobileAppAsWin32LobAppContentVersionFile -MobileAppId $MobileAppID -BodyParameter (ConvertTo-Json($fileBody))
+$fileId = $file.id #9b5d624d-45de-4c5a-b8dd-509051e91a0a
+#$fileUri = "https://graph.microsoft.com/beta/deviceAppManagement/mobileApps/$MobileAppID/microsoft.graph.win32LobApp/contentVersions/1/files/$fileId";
+#$file = Invoke-MgGraphRequest -Method GET -Uri $fileUri
+$file = Get-MgDeviceAppManagementMobileAppAsWin32LobAppContentVersionFile -MobileAppId $MobileAppID -MobileAppContentId 1 -MobileAppContentFileId $mobileAppContentFileId $file.id
+$AzBlobUri = $file.azureStorageUri
+$IntuneWinFile = Get-IntuneWinFile "$SourceFile" -fileName "$filename"
+#UploadFileToAzureStorage $file.azureStorageUri "$IntuneWinFile" $fileUri;
+#https://stackoverflow.com/questions/38354888/upload-files-and-folder-into-azure-blob-storage
+#https://learn.microsoft.com/de-de/powershell/module/servicemanagement/azure.storage/set-azurestorageblobcontent?view=azuresmps-4.0.0
+$filesToUpload = Get-ChildItem $IntuneWinFile -Recurse -File
 
+        foreach ($x in $filesToUpload) {
+            $targetPath = ($x.fullname.Substring($sourceFileRootDirectory.Length + 1)).Replace("\", "/")
 
-}
-
+            Write-Verbose "Uploading $("\" + $x.fullname.Substring($sourceFileRootDirectory.Length + 1)) to $($container.CloudBlobContainer.Uri.AbsoluteUri + "/" + $AzBlobUri)"
+            Set-AzureStorageBlobContent -File $x.fullname -Container $container.Name -Blob $AzBlobUri -Force:$Force | Out-Null
+        }
 
 # Script Header
 Write-Host "==========================================" -ForegroundColor Cyan
