@@ -20,6 +20,7 @@
     https://github.com/microsoftgraph/powershell-intune-samples/blob/master/LOB_Application/Win32_Application_Add.ps1#L852
     https://ourcloudnetwork.com/how-to-use-invoke-mggraphrequest-with-powershell/
     https://developer.microsoft.com/en-us/graph/graph-explorer
+    https://www.scriptinglibrary.com/languages/powershell/how-to-upload-files-to-azure-blob-storage-using-powershell-via-the-rest-api/
 
     Modules:
     Microsoft.Graph.Authentication 
@@ -62,6 +63,84 @@ If (-Not($OutputDir)){$OutputDir="$PSScriptRoot\Output"}
 
 #------------------------ Functions ------------------------
 #===========================================================
+
+
+function Add-FileToAzureStorage{
+    param(
+    [Parameter(Mandatory=$true)]
+    $sasUri,
+    [Parameter(Mandatory=$true)]
+    $filepath,
+    [Parameter(Mandatory=$true)]
+    $fileUri
+    )
+	try {
+        $chunkSizeInBytes = 1024l * 1024l * 60
+		# Start the timer for SAS URI renewal.
+		$sasRenewalTimer = [System.Diagnostics.Stopwatch]::StartNew()
+		# Find the file size and open the file.
+		$fileSize = (Get-Item $filepath).length;
+		$chunks = [Math]::Ceiling($fileSize / $chunkSizeInBytes);
+		$reader = New-Object System.IO.BinaryReader([System.IO.File]::Open($filepath, [System.IO.FileMode]::Open));
+		
+		# Upload each chunk. Check whether a SAS URI renewal is required after each chunk is uploaded and renew if needed.
+		$ids = @();
+		for ($chunk = 0; $chunk -lt $chunks; $chunk++){
+
+			$id = [System.Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes($chunk.ToString("0000")))
+			$ids += $id
+
+			$start = $chunk * $chunkSizeInBytes;
+			$length = [Math]::Min($chunkSizeInBytes, $fileSize - $start)
+			$bytes = $reader.ReadBytes($length)
+			
+			$currentChunk = $chunk + 1		
+
+            Write-Progress -Activity "Uploading File to Azure Storage" -status "Uploading chunk $currentChunk of $chunks" -percentComplete ($currentChunk / $chunks*100)
+
+            $uri = "$sasUri&comp=block&blockid=$id"
+            $iso = [System.Text.Encoding]::GetEncoding("iso-8859-1")
+            $encodedBody = $iso.GetString($bytes)
+            $headers = @{
+                "x-ms-blob-type" = "BlockBlob"
+            }
+
+            return = Invoke-MgGraphRequest -Uri $uri -Method Put -Headers $headers -Body $encodedBody
+
+			# Renew the SAS URI if 7 minutes have elapsed since the upload started or was renewed last.
+			if ($currentChunk -lt $chunks -and $sasRenewalTimer.ElapsedMilliseconds -ge 450000){
+                $renewalUri = "$fileUri/renewUpload"
+                $actionBody = ""
+                $null = Invoke-MgGraphRequest -Uri $renewalUri -Body $actionBody
+                $sasRenewalTimer.Restart()
+            }
+
+		}
+        Write-Progress -Completed -Activity "Uploading File to Azure Storage"
+		$reader.Close();
+	}
+
+	finally {
+		if ($null -ne $reader) { $reader.Dispose() }
+    }
+	
+	# Finalize the upload.
+    $uri = "$sasUri&comp=blocklist";
+	$xml = '<?xml version="1.0" encoding="utf-8"?><BlockList>';
+	foreach ($id in $ids){
+		$xml += "<Latest>$id</Latest>";
+	}
+	$xml += '</BlockList>';
+	try{
+		Invoke-RestMethod $uri -Method Put -Body $xml;
+	}
+	catch{
+		Write-Host -ForegroundColor Red $request;
+		Write-Host -ForegroundColor Red $_.Exception.Message;
+		throw;
+	}
+}
+
 
 Function Get-IntuneWinFile{
     param(
@@ -175,105 +254,122 @@ function New-IntuneWin32App {
     )
 
 # Function Code
-$Iconpath = "$SourceDir\$IconName"
-$installCmd = "install.bat"
-$uninstallCmd = "uninstall.bat"
-$installCmdString= get-content "$SourceDir\$installCmd"
-$displayName = ($installCmdString -match "DESCRIPTION").Replace("REM DESCRIPTION","")[0].Trim()
-$publisher = ($installCmdString -match "MANUFACTURER").Replace("REM MANUFACTURER","")[0].Trim()
-$fileName = ($installCmdString -match "FILENAME").Replace("REM FILENAME","")[0].Trim()
-$version = ($installCmdString -match "VERSION").Replace("REM VERSION","")[0].Trim()
-# [System.Convert]::ToBase64String([System.IO.File]::ReadAllBytes("$($Iconpath)"))
-$Icon = @{
-    "@odata.type" = "microsoft.graph.mimeContent"
-    type= "image/png"
-    value= [System.IO.File]::ReadAllBytes($Iconpath)  
+    $Iconpath = "$SourceDir\$IconName"
+    $installCmd = "install.bat"
+    $uninstallCmd = "uninstall.bat"
+    $installCmdString= get-content "$SourceDir\$installCmd"
+    $displayName = ($installCmdString -match "DESCRIPTION").Replace("REM DESCRIPTION","")[0].Trim()
+    $publisher = ($installCmdString -match "MANUFACTURER").Replace("REM MANUFACTURER","")[0].Trim()
+    $fileName = ($installCmdString -match "FILENAME").Replace("REM FILENAME","")[0].Trim()
+    $version = ($installCmdString -match "VERSION").Replace("REM VERSION","")[0].Trim()
+    # [System.Convert]::ToBase64String([System.IO.File]::ReadAllBytes("$($Iconpath)"))
+
+
+    $MobileAppID=(Get-MgDeviceAppManagementMobileApp | Where-Object {$_.DisplayName -like $displayName}).Id[0]
+    If (-not $MobileAppID){
+        $Icon = @{
+            "@odata.type" = "microsoft.graph.mimeContent"
+            type= "image/png"
+            value= [System.IO.File]::ReadAllBytes($Iconpath)  
+            }
+        $Description = $(get-childitem $SourceDir -Filter "Description*" | get-content -Encoding UTF8 |Out-String)
+        $IntuneWinMetadata = Get-IntuneWinMetadata -FilePath $AppPath
+        If(($installCmdString -match "msiexec").Count -gt 0){
+            $MSIName = (get-childitem $SourceDir -Filter "*.msi")[0].FullName
+            $MSIProductCode = (Get-AppLockerFileInformation $MSIName |Select-Object -ExpandProperty Publisher).BinaryName
+            $Rule=@{
+                "@odata.type"= "#microsoft.graph.win32LobAppProductCodeRule"
+                ruleType= "detection"
+                productCode= $MSIProductCode
+                }
+        }
+        Else {
+            $filePath = (Get-ChildItem -Path "C:\Program*"  -Recurse -ErrorAction SilentlyContinue -Include $fileName -Depth 3).FullName
+            $Rule=@{
+                "@odata.type"= "microsoft.graph.win32LobAppFileSystemRule"
+                "ruleType"= "detection"
+                "path"= (Split-Path -Path $filePath -Parent)
+                "fileOrFolderName"= (Split-Path -Path $filePath -Leaf)
+                "check32BitOn64System"= $true
+                "operationType"= "version"
+                "operator"= "greaterThanOrEqual"
+                "comparisonValue"= $version
+                }
+        }
+    
+        $params = @{
+            "@odata.type" = "microsoft.graph.win32LobApp"
+            displayName = $displayName
+            publisher = $publisher
+            displayVersion = $version
+            description = $Description
+            installCommandLine = $installCmd
+            uninstallCommandLine = $uninstallCmd
+            applicableArchitectures = "x64"
+            setupFilePath = $IntuneWinMetadata.ApplicationInfo.SetupFile
+            fileName = $IntuneWinMetadata.ApplicationInfo.FileName
+            #size = [int]$IntuneWinMetadata.ApplicationInfo.UnencryptedContentSize
+            publishingState = "notPublished"
+            msiInformation = $null
+            runAs32bit = $false
+            largeIcon = @(
+                $Icon
+            )
+            rules = @(
+                $Rule
+            )
+            installExperience = @{
+                "@odata.type" = "microsoft.graph.win32LobAppInstallExperience"
+                runAsAccount = "system" #system, user
+                deviceRestartBehavior = "basedOnReturnCode" #basedOnReturnCode, allow, suppress, force
+            }
+        }
+        $MobileAppID = (New-MgDeviceAppManagementMobileApp -BodyParameter (ConvertTo-Json($params))).Id
     }
-$Description = $(get-childitem $SourceDir -Filter "Description*" | get-content -Encoding UTF8 |Out-String)
-$IntuneWinMetadata = Get-IntuneWinMetadata -FilePath $AppPath
-If(($installCmdString -match "msiexec").Count -gt 0){
-    $MSIName = (get-childitem $SourceDir -Filter "*.msi")[0].FullName
-    $MSIProductCode = (Get-AppLockerFileInformation $MSIName |Select-Object -ExpandProperty Publisher).BinaryName
-    $Rule=@{
-        "@odata.type"= "#microsoft.graph.win32LobAppProductCodeRule"
-        ruleType= "detection"
-        productCode= $MSIProductCode
+    $Size = [int64]$IntuneWinMetadata.ApplicationInfo.UnencryptedContentSize
+    # Prepare File Upload to Azure Blob Storage
+
+
+    $fileUri = "https://graph.microsoft.com/beta/deviceAppManagement/mobileApps/$MobileAppID/microsoft.graph.win32LobApp/contentVersions?$select=id";
+    $ContentID = (Invoke-MgGraphRequest -Method GET -Uri $fileUri).value.id
+    If($ContentID.Count -gt 1){
+        $file = Get-MgDeviceAppManagementMobileAppAsWin32LobAppContentVersionFile -MobileAppId $MobileAppID -MobileAppContentId $ContentID
+        $ContentFileId = $file.id
+    }
+    Else{
+        $fileBody =  @{ 
+            "@odata.type" = "#microsoft.graph.mobileAppContentFile"
+            name = $AppPath
+            size = $Size
+            sizeEncrypted =  (Get-Item $AppPath).Length
+            manifest = $null
+            isDependency = $false
         }
-}
-Else {
-    $filePath = (Get-ChildItem -Path "C:\Program*"  -Recurse -ErrorAction SilentlyContinue -Include $fileName -Depth 3).FullName
-    $Rule=@{
-        "@odata.type"= "microsoft.graph.win32LobAppFileSystemRule"
-        "ruleType"= "detection"
-        "path"= (Split-Path -Path $filePath -Parent)
-        "fileOrFolderName"= (Split-Path -Path $filePath -Leaf)
-        "check32BitOn64System"= $true
-        "operationType"= "version"
-        "operator"= "greaterThanOrEqual"
-        "comparisonValue"= $version
-        }
-}
+        $file = New-MgDeviceAppManagementMobileAppAsWin32LobAppContentVersionFile -MobileAppId $MobileAppID -MobileAppContentId $ContentID -BodyParameter (ConvertTo-Json($fileBody))
+        $ContentFileId = $file.id
+    }   
+    #$fileUri = "https://graph.microsoft.com/beta/deviceAppManagement/mobileApps/$MobileAppID/microsoft.graph.win32LobApp/contentVersions/1/files/$mobileAppContentFileId";
+    #$file = Invoke-MgGraphRequest -Method GET -Uri $fileUri
+    $file = (Get-MgDeviceAppManagementMobileAppAsWin32LobAppContentVersionFile -MobileAppId $MobileAppID -MobileAppContentId $ContentID -MobileAppContentFileId $ContentFileId)
+    
+    # Upload the file to Azure Blob Storage
+    $AzBlobUri = $file.azureStorageUri
+    #$IntuneWinFile = Get-IntuneWinFile "$SourceFile" -fileName "$filename"
+    #UploadFileToAzureStorage $file.azureStorageUri "$IntuneWinFile" $fileUri;
 
+   
 
-$params = @{
-    "@odata.type" = "microsoft.graph.win32LobApp"
-    displayName = $displayName
-    publisher = $publisher
-    displayVersion = $version
-    description = $Description
-    installCommandLine = $installCmd
-    uninstallCommandLine = $uninstallCmd
-    applicableArchitectures = "x64"
-    setupFilePath = $IntuneWinMetadata.ApplicationInfo.SetupFile
-    fileName = $IntuneWinMetadata.ApplicationInfo.FileName
-    #size = [int]$IntuneWinMetadata.ApplicationInfo.UnencryptedContentSize
-    publishingState = "notPublished"
-    msiInformation = $null
-    runAs32bit = $false
-	largeIcon = @(
-        $Icon
-	)
-    rules = @(
-        $Rule
-    )
-	installExperience = @{
-		"@odata.type" = "microsoft.graph.win32LobAppInstallExperience"
-		runAsAccount = "system" #system, user
-		deviceRestartBehavior = "basedOnReturnCode" #basedOnReturnCode, allow, suppress, force
-	}
+    $HashArguments = @{
+        uri = $AzBlobUri
+        method = "Put"
+        InputFilePath = $AppPath
+        headers = @{"x-ms-blob-type" = "BlockBlob"}
+    }
+    $UploadStatus= Invoke-MgGraphRequest @HashArguments
+    $fileUri = "https://graph.microsoft.com/beta/deviceAppManagement/mobileApps/$MobileAppID/microsoft.graph.win32LobApp/contentVersions/1/files/$ContentFileId"
+    #Add-FileToAzureStorage -sasUri $AzBlobUri -filepath $AppPath -fileUri $fileUri
 
 }
-
-$MobileAppID = (New-MgDeviceAppManagementMobileApp -BodyParameter $params).Id
-$Size = [int64]$IntuneWinMetadata.ApplicationInfo.UnencryptedContentSize
-#Upload File
-$fileBody =  @{ 
-    "@odata.type" = "#microsoft.graph.mobileAppContentFile"
-    name = $AppPath
-    size = $Size
-    sizeEncrypted =  (Get-Item $AppPath).Length
-    manifest = $null
-    isDependency = $false
-}
-
-$file = New-MgDeviceAppManagementMobileAppAsWin32LobAppContentVersionFile -MobileAppId $MobileAppID -BodyParameter (ConvertTo-Json($fileBody))
-$fileId = $file.id #9b5d624d-45de-4c5a-b8dd-509051e91a0a
-#$fileUri = "https://graph.microsoft.com/beta/deviceAppManagement/mobileApps/$MobileAppID/microsoft.graph.win32LobApp/contentVersions/1/files/$fileId";
-#$file = Invoke-MgGraphRequest -Method GET -Uri $fileUri
-$file = Get-MgDeviceAppManagementMobileAppAsWin32LobAppContentVersionFile -MobileAppId $MobileAppID -MobileAppContentId 1 -MobileAppContentFileId $mobileAppContentFileId $file.id
-$AzBlobUri = $file.azureStorageUri
-$IntuneWinFile = Get-IntuneWinFile "$SourceFile" -fileName "$filename"
-#UploadFileToAzureStorage $file.azureStorageUri "$IntuneWinFile" $fileUri;
-#https://stackoverflow.com/questions/38354888/upload-files-and-folder-into-azure-blob-storage
-#https://learn.microsoft.com/de-de/powershell/module/servicemanagement/azure.storage/set-azurestorageblobcontent?view=azuresmps-4.0.0
-$filesToUpload = Get-ChildItem $IntuneWinFile -Recurse -File
-
-        foreach ($x in $filesToUpload) {
-            $targetPath = ($x.fullname.Substring($sourceFileRootDirectory.Length + 1)).Replace("\", "/")
-
-            Write-Verbose "Uploading $("\" + $x.fullname.Substring($sourceFileRootDirectory.Length + 1)) to $($container.CloudBlobContainer.Uri.AbsoluteUri + "/" + $AzBlobUri)"
-            Set-AzureStorageBlobContent -File $x.fullname -Blob $AzBlobUri
-        }
 
 # Script Header
 Write-Host "==========================================" -ForegroundColor Cyan
