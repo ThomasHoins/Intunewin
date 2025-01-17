@@ -21,6 +21,7 @@
     https://ourcloudnetwork.com/how-to-use-invoke-mggraphrequest-with-powershell/
     https://developer.microsoft.com/en-us/graph/graph-explorer
     https://www.scriptinglibrary.com/languages/powershell/how-to-upload-files-to-azure-blob-storage-using-powershell-via-the-rest-api/
+    https://github.com/tabs-not-spaces/Intune-App-Deploy/blob/master/tasks/Deploy.Functions.ps1
 
     Modules:
     Microsoft.Graph.Authentication 
@@ -63,83 +64,6 @@ If (-Not($OutputDir)){$OutputDir="$PSScriptRoot\Output"}
 
 #------------------------ Functions ------------------------
 #===========================================================
-
-
-function Add-FileToAzureStorage{
-    param(
-    [Parameter(Mandatory=$true)]
-    $sasUri,
-    [Parameter(Mandatory=$true)]
-    $filepath,
-    [Parameter(Mandatory=$true)]
-    $fileUri
-    )
-	try {
-        $chunkSizeInBytes = 1024l * 1024l * 60
-		# Start the timer for SAS URI renewal.
-		$sasRenewalTimer = [System.Diagnostics.Stopwatch]::StartNew()
-		# Find the file size and open the file.
-		$fileSize = (Get-Item $filepath).length;
-		$chunks = [Math]::Ceiling($fileSize / $chunkSizeInBytes);
-		$reader = New-Object System.IO.BinaryReader([System.IO.File]::Open($filepath, [System.IO.FileMode]::Open));
-		
-		# Upload each chunk. Check whether a SAS URI renewal is required after each chunk is uploaded and renew if needed.
-		$ids = @();
-		for ($chunk = 0; $chunk -lt $chunks; $chunk++){
-
-			$id = [System.Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes($chunk.ToString("0000")))
-			$ids += $id
-
-			$start = $chunk * $chunkSizeInBytes;
-			$length = [Math]::Min($chunkSizeInBytes, $fileSize - $start)
-			$bytes = $reader.ReadBytes($length)
-			
-			$currentChunk = $chunk + 1		
-
-            Write-Progress -Activity "Uploading File to Azure Storage" -status "Uploading chunk $currentChunk of $chunks" -percentComplete ($currentChunk / $chunks*100)
-
-            $uri = "$sasUri&comp=block&blockid=$id"
-            $iso = [System.Text.Encoding]::GetEncoding("iso-8859-1")
-            $encodedBody = $iso.GetString($bytes)
-            $headers = @{
-                "x-ms-blob-type" = "BlockBlob"
-            }
-
-            return = Invoke-MgGraphRequest -Uri $uri -Method Put -Headers $headers -Body $encodedBody
-
-			# Renew the SAS URI if 7 minutes have elapsed since the upload started or was renewed last.
-			if ($currentChunk -lt $chunks -and $sasRenewalTimer.ElapsedMilliseconds -ge 450000){
-                $renewalUri = "$fileUri/renewUpload"
-                $actionBody = ""
-                $null = Invoke-MgGraphRequest -Uri $renewalUri -Body $actionBody
-                $sasRenewalTimer.Restart()
-            }
-
-		}
-        Write-Progress -Completed -Activity "Uploading File to Azure Storage"
-		$reader.Close();
-	}
-
-	finally {
-		if ($null -ne $reader) { $reader.Dispose() }
-    }
-	
-	# Finalize the upload.
-    $uri = "$sasUri&comp=blocklist";
-	$xml = '<?xml version="1.0" encoding="utf-8"?><BlockList>';
-	foreach ($id in $ids){
-		$xml += "<Latest>$id</Latest>";
-	}
-	$xml += '</BlockList>';
-	try{
-		Invoke-RestMethod $uri -Method Put -Body $xml;
-	}
-	catch{
-		Write-Host -ForegroundColor Red $request;
-		Write-Host -ForegroundColor Red $_.Exception.Message;
-		throw;
-	}
-}
 
 
 Function Get-IntuneWinFile{
@@ -341,7 +265,7 @@ function New-IntuneWin32App {
             "@odata.type" = "#microsoft.graph.mobileAppContentFile"
             name = $AppPath
             size = $Size
-            sizeEncrypted =  (Get-Item $AppPath).Length
+            sizeEncrypted = (Get-Item $AppPath).Length
             manifest = $null
             isDependency = $false
         }
@@ -354,22 +278,41 @@ function New-IntuneWin32App {
     
     # Upload the file to Azure Blob Storage
     $AzBlobUri = $file.azureStorageUri
-    #$IntuneWinFile = Get-IntuneWinFile "$SourceFile" -fileName "$filename"
-    #UploadFileToAzureStorage $file.azureStorageUri "$IntuneWinFile" $fileUri;
-
    
-
-    $HashArguments = @{
-        uri = $AzBlobUri
-        method = "Put"
-        InputFilePath = $AppPath
-        headers = @{"x-ms-blob-type" = "BlockBlob"}
+    #this does just not work. azcopy (maybe) does and is much faster
+    #$HashArguments = @{
+    #    uri = $AzBlobUri
+    #    method = "Put"
+    #    InFile = $AppPath
+    #    headers = @{"x-ms-blob-type" = "BlockBlob"}
+    #}
+    #Invoke-RestMethod @HashArguments
+    
+    $upResult = & "C:\Users\thomas.hoins\AppData\Local\Microsoft\WinGet\Packages\Microsoft.Azure.AZCopy.10_Microsoft.Winget.Source_8wekyb3d8bbwe\azcopy_windows_amd64_10.27.1\azcopy.exe" copy $AppPath $AzBlobUri --block-size-mb 4 --output-type "json"
+    
+    $fileEncryptionInfo = @{    
+        fileEncryptionInfo = @{
+            encryptionKey = $IntuneWinMetadata.ApplicationInfo.EncryptionInfo.EncryptionKey
+            macKey = $IntuneWinMetadata.ApplicationInfo.EncryptionInfo.macKey
+            initializationVector = $IntuneWinMetadata.ApplicationInfo.EncryptionInfo.initializationVector
+            mac = $IntuneWinMetadata.ApplicationInfo.EncryptionInfo.mac
+            profileIdentifier = "ProfileVersion1";
+            fileDigest = $IntuneWinMetadata.ApplicationInfo.EncryptionInfo.fileDigest
+            fileDigestAlgorithm = $IntuneWinMetadata.ApplicationInfo.EncryptionInfo.fileDigestAlgorithm
+        }
     }
-    $UploadStatus= Invoke-MgGraphRequest @HashArguments
-    $fileUri = "https://graph.microsoft.com/beta/deviceAppManagement/mobileApps/$MobileAppID/microsoft.graph.win32LobApp/contentVersions/1/files/$ContentFileId"
-    #Add-FileToAzureStorage -sasUri $AzBlobUri -filepath $AppPath -fileUri $fileUri
+    return $($upResult | ConvertFrom-Json)
+
+    $commitFileUri = "https://graph.microsoft.com/beta/deviceAppManagement/mobileApps/$MobileAppID/microsoft.graph.win32LobApp/contentVersions/$ContentID/files/$ContentFileId/commit"
+    $commitFileUri
+    Invoke-MgGraphRequest -Method POST $commitFileUri -Body ($fileEncryptionInfo |ConvertTo-Json)
+
+
+
 
 }
+
+#------------------------ Main Script ------------------------
 
 # Script Header
 Write-Host "==========================================" -ForegroundColor Cyan
