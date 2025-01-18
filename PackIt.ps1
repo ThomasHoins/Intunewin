@@ -65,6 +65,34 @@ If (-Not($OutputDir)){$OutputDir="$PSScriptRoot\Output"}
 #------------------------ Functions ------------------------
 #===========================================================
 
+function Wait-ForFileProcessing {
+    [cmdletbinding()]
+    param (
+        $fileUri,
+        $stage
+    )
+    $attempts = 600
+    $successState = "$($stage)Success"
+    $pendingState = "$($stage)Pending"
+    $file = $null
+    while ($attempts -gt 0) {
+        $file = Invoke-MgGraphRequest -Method GET -Uri $fileUri
+        if ($file.uploadState -eq $successState) {
+            break
+        }
+        elseif ($file.uploadState -ne $pendingState) {
+            Write-Host -ForegroundColor Red $_.Exception.Message
+            throw "File upload state is not successful: $($file.uploadState)"
+        }
+        Start-Sleep 10
+        $attempts--
+    }
+    if ($null -eq $file -or $file.uploadState -ne $successState) {
+        throw "File request did not complete in the allotted time."
+    }
+    $file
+}
+
 
 Function Get-IntuneWinFile{
     param(
@@ -184,12 +212,14 @@ function New-IntuneWin32App {
     $installCmdString= get-content "$SourceDir\$installCmd"
     $displayName = ($installCmdString -match "DESCRIPTION").Replace("REM DESCRIPTION","")[0].Trim()
     $publisher = ($installCmdString -match "MANUFACTURER").Replace("REM MANUFACTURER","")[0].Trim()
-    $fileName = ($installCmdString -match "FILENAME").Replace("REM FILENAME","")[0].Trim()
+    #$fileName = ($installCmdString -match "FILENAME").Replace("REM FILENAME","")[0].Trim()
     $version = ($installCmdString -match "VERSION").Replace("REM VERSION","")[0].Trim()
     # [System.Convert]::ToBase64String([System.IO.File]::ReadAllBytes("$($Iconpath)"))
 
+    $IntuneWinMetadata = Get-IntuneWinMetadata -FilePath $AppPath
 
-    $MobileAppID=(Get-MgDeviceAppManagementMobileApp | Where-Object {$_.DisplayName -like $displayName}).Id[0]
+    # Create the Win32 App in Intune if it does not exist
+    $MobileAppID=(Get-MgDeviceAppManagementMobileApp | Where-Object {$_.DisplayName -like $displayName}).Id
     If (-not $MobileAppID){
         $Icon = @{
             "@odata.type" = "microsoft.graph.mimeContent"
@@ -197,7 +227,7 @@ function New-IntuneWin32App {
             value= [System.IO.File]::ReadAllBytes($Iconpath)  
             }
         $Description = $(get-childitem $SourceDir -Filter "Description*" | get-content -Encoding UTF8 |Out-String)
-        $IntuneWinMetadata = Get-IntuneWinMetadata -FilePath $AppPath
+        
         If(($installCmdString -match "msiexec").Count -gt 0){
             $MSIName = (get-childitem $SourceDir -Filter "*.msi")[0].FullName
             $MSIProductCode = (Get-AppLockerFileInformation $MSIName |Select-Object -ExpandProperty Publisher).BinaryName
@@ -250,46 +280,39 @@ function New-IntuneWin32App {
         }
         $MobileAppID = (New-MgDeviceAppManagementMobileApp -BodyParameter (ConvertTo-Json($params))).Id
     }
-    $Size = [int64]$IntuneWinMetadata.ApplicationInfo.UnencryptedContentSize
+    
     # Prepare File Upload to Azure Blob Storage
-
-
-    $fileUri = "https://graph.microsoft.com/beta/deviceAppManagement/mobileApps/$MobileAppID/microsoft.graph.win32LobApp/contentVersions?$select=id";
-    $ContentID = (Invoke-MgGraphRequest -Method GET -Uri $fileUri).value.id
-    If($ContentID.Count -gt 1){
-        $file = Get-MgDeviceAppManagementMobileAppAsWin32LobAppContentVersionFile -MobileAppId $MobileAppID -MobileAppContentId $ContentID
-        $ContentFileId = $file.id
+    $Size = [int64]$IntuneWinMetadata.ApplicationInfo.UnencryptedContentSize
+    $fileBody =  @{ 
+        "@odata.type" = "#microsoft.graph.mobileAppContentFile"
+        name = $AppPath
+        size = $Size
+        sizeEncrypted = (Get-Item $AppPath).Length
+        manifest = $null
+        isDependency = $false
     }
-    Else{
-        $fileBody =  @{ 
-            "@odata.type" = "#microsoft.graph.mobileAppContentFile"
-            name = $AppPath
-            size = $Size
-            sizeEncrypted = (Get-Item $AppPath).Length
-            manifest = $null
-            isDependency = $false
-        }
-        $file = New-MgDeviceAppManagementMobileAppAsWin32LobAppContentVersionFile -MobileAppId $MobileAppID -MobileAppContentId $ContentID -BodyParameter (ConvertTo-Json($fileBody))
-        $ContentFileId = $file.id
-    }   
-    #$fileUri = "https://graph.microsoft.com/beta/deviceAppManagement/mobileApps/$MobileAppID/microsoft.graph.win32LobApp/contentVersions/1/files/$mobileAppContentFileId";
-    #$file = Invoke-MgGraphRequest -Method GET -Uri $fileUri
-    $file = (Get-MgDeviceAppManagementMobileAppAsWin32LobAppContentVersionFile -MobileAppId $MobileAppID -MobileAppContentId $ContentID -MobileAppContentFileId $ContentFileId)
-    
+    # Get the Content file ID
+    $fileUri = "https://graph.microsoft.com/beta/deviceAppManagement/mobileApps/$MobileAppID/microsoft.graph.win32LobApp/contentVersions/1/files"
+    $file = Invoke-MgGraphRequest -Method POST -Uri $fileUri -Body ($fileBody | ConvertTo-Json)  
+    $ContentFileId = $file.id
+
+
+    $fileUri = "https://graph.microsoft.com/beta/deviceAppManagement/mobileApps/$MobileAppID/microsoft.graph.win32LobApp/contentVersions/1/files/$ContentFileId";
+    $file = Wait-ForFileProcessing $fileUri "AzureStorageUriRequest"
+
     # Upload the file to Azure Blob Storage
+    #https://learn.microsoft.com/en-us/rest/api/storageservices/put-blob?tabs=microsoft-entra-id
     $AzBlobUri = $file.azureStorageUri
-   
-    #this does just not work. azcopy (maybe) does and is much faster
-    #$HashArguments = @{
-    #    uri = $AzBlobUri
-    #    method = "Put"
-    #    InFile = $AppPath
-    #    headers = @{"x-ms-blob-type" = "BlockBlob"}
-    #}
-    #Invoke-RestMethod @HashArguments
-    
-    $upResult = & "C:\Users\thomas.hoins\AppData\Local\Microsoft\WinGet\Packages\Microsoft.Azure.AZCopy.10_Microsoft.Winget.Source_8wekyb3d8bbwe\azcopy_windows_amd64_10.27.1\azcopy.exe" copy $AppPath $AzBlobUri --block-size-mb 4 --output-type "json"
-    
+    #https://stackoverflow.com/questions/69031080/using-only-a-sas-token-to-upload-in-powershell
+    #$uri = [System.Uri] $AzBlobUri
+    $headers = @{
+        "x-ms-blob-type" = "BlockBlob"
+        "Content-Length" = (Get-Item $AppPath).Length
+        }
+
+    $result = Invoke-RestMethod -Method "PUT" -uri $AzBlobUri -InFile $AppPath -Headers $headers -Verbose -UseBasicParsing
+ 
+    # Commit the file
     $fileEncryptionInfo = @{    
         fileEncryptionInfo = @{
             encryptionKey = $IntuneWinMetadata.ApplicationInfo.EncryptionInfo.EncryptionKey
@@ -301,14 +324,19 @@ function New-IntuneWin32App {
             fileDigestAlgorithm = $IntuneWinMetadata.ApplicationInfo.EncryptionInfo.fileDigestAlgorithm
         }
     }
-    return $($upResult | ConvertFrom-Json)
-
-    $commitFileUri = "https://graph.microsoft.com/beta/deviceAppManagement/mobileApps/$MobileAppID/microsoft.graph.win32LobApp/contentVersions/$ContentID/files/$ContentFileId/commit"
-    $commitFileUri
+ 
+    $commitFileUri = "https://graph.microsoft.com/beta/deviceAppManagement/mobileApps/$MobileAppID/microsoft.graph.win32LobApp/contentVersions/1/files/$ContentFileId/commit"
+   
     Invoke-MgGraphRequest -Method POST $commitFileUri -Body ($fileEncryptionInfo |ConvertTo-Json)
-
-
-
+    #$file = Wait-ForFileProcessing $fileUri "CommitFile"
+    
+    $commitAppBody = @{ 
+        "@odata.type" = "#microsoft.graph.win32LobApp"
+        committedContentVersion = "1"
+        }   
+    $commitUri ="https://graph.microsoft.com/beta/deviceAppManagement/mobileApps/$MobileAppID"
+    $response = Invoke-MgGraphRequest -Method "PATCH" $commitUri -Body ($commitAppBody | ConvertTo-Json) -ContentType 'application/json'
+ 
 
 }
 
@@ -395,7 +423,7 @@ $AppSecret = "u9D8Q~HX31tRrc-tPwojE02g8OvcP4VqSz5H2a7p"
 # Connect to Microsoft Graph Using the Tenant ID and Client Secret Credential
 $SecureClientSecret = ConvertTo-SecureString -String $AppSecret -AsPlainText -Force
 $ClientSecretCredential = New-Object -TypeName System.Management.Automation.PSCredential -ArgumentList $AppId, $SecureClientSecret
-Connect-MgGraph -TenantId $TenantID -ClientSecretCredential $ClientSecretCredential
+Connect-MgGraph -TenantId $TenantID -ClientSecretCredential $ClientSecretCredential -NoWelcome
 
 New-IntuneWin32App -AppPath $renamedFile -SourceDir $sourceDir
 exit 0
