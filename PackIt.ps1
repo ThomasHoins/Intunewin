@@ -22,10 +22,17 @@
     https://developer.microsoft.com/en-us/graph/graph-explorer
     https://www.scriptinglibrary.com/languages/powershell/how-to-upload-files-to-azure-blob-storage-using-powershell-via-the-rest-api/
     https://github.com/tabs-not-spaces/Intune-App-Deploy/blob/master/tasks/Deploy.Functions.ps1
+    https://learn.microsoft.com/en-us/rest/api/storageservices/put-blob?tabs=microsoft-entra-id
+    https://stackoverflow.com/questions/69031080/using-only-a-sas-token-to-upload-in-powershell
+    https://learn.microsoft.com/en-us/rest/api/storageservices/naming-and-referencing-containers--blobs--and-metadata
+
+
+    $azCopyUri = "https://aka.ms/downloadazcopy-v10-windows"
 
     Modules:
     Microsoft.Graph.Authentication 
     Microsoft.Graph.Devices.CorporateManagement
+    #Az.Storage
 
 .LINK
     [Your Documentation or GitHub Link Here]
@@ -52,7 +59,7 @@
 #>
 param (
     [Parameter(Mandatory = $false)]
-    [string]$SourceDir = "C:\Intunewin\keepassxc.org_KeePassXC_2.79_MUI",
+    [string]$SourceDir = "C:\Intunewin\Don Ho_Notepad++_8.7.5_MUI",
 
     [Parameter(Mandatory = $false)]
     [string]$outputDir="C:\Intunewin\Output",
@@ -210,21 +217,21 @@ function New-IntuneWin32App {
     $installCmd = "install.bat"
     $uninstallCmd = "uninstall.bat"
     $installCmdString= get-content "$SourceDir\$installCmd"
-    $displayName = ($installCmdString -match "DESCRIPTION").Replace("REM DESCRIPTION","")[0].Trim()
-    $publisher = ($installCmdString -match "MANUFACTURER").Replace("REM MANUFACTURER","")[0].Trim()
-    #$fileName = ($installCmdString -match "FILENAME").Replace("REM FILENAME","")[0].Trim()
-    $version = ($installCmdString -match "VERSION").Replace("REM VERSION","")[0].Trim()
+    $displayName = ($installCmdString -match "REM DESCRIPTION").Replace("REM DESCRIPTION","").Trim()
+    $publisher = ($installCmdString -match "REM MANUFACTURER").Replace("REM MANUFACTURER","").Trim()
+    $fileName = ($installCmdString -match "REM FILENAME").Replace("REM FILENAME","").Trim()
+    $version = ($installCmdString -match "REM VERSION").Replace("REM VERSION","").Trim()
     # [System.Convert]::ToBase64String([System.IO.File]::ReadAllBytes("$($Iconpath)"))
 
     $IntuneWinMetadata = Get-IntuneWinMetadata -FilePath $AppPath
 
     # Create the Win32 App in Intune if it does not exist
-    $MobileAppID=(Get-MgDeviceAppManagementMobileApp | Where-Object {$_.DisplayName -like $displayName}).Id
+    $MobileAppID=(Get-MgDeviceAppManagementMobileApp | Where-Object {$_.DisplayName -eq $displayName}).Id
     If (-not $MobileAppID){
         $Icon = @{
             "@odata.type" = "microsoft.graph.mimeContent"
             type= "image/png"
-            value= [System.IO.File]::ReadAllBytes($Iconpath)  
+            value = [Convert]::ToBase64String((Get-Content -Path $Iconpath -Encoding Byte))
             }
         $Description = $(get-childitem $SourceDir -Filter "Description*" | get-content -Encoding UTF8 |Out-String)
         
@@ -238,7 +245,12 @@ function New-IntuneWin32App {
                 }
         }
         Else {
-            $filePath = (Get-ChildItem -Path "C:\Program*"  -Recurse -ErrorAction SilentlyContinue -Include $fileName -Depth 3).FullName
+            If($fileName){
+                $filePath = (Get-ChildItem -Path "C:\Program*"  -Recurse -ErrorAction SilentlyContinue -Include $fileName -Depth 3).FullName
+            }
+            Else{
+                $filePath =""
+            }
             $Rule=@{
                 "@odata.type"= "microsoft.graph.win32LobAppFileSystemRule"
                 "ruleType"= "detection"
@@ -255,7 +267,7 @@ function New-IntuneWin32App {
             "@odata.type" = "microsoft.graph.win32LobApp"
             displayName = $displayName
             publisher = $publisher
-            displayVersion = $version
+            #displayVersion = $version
             description = $Description
             installCommandLine = $installCmd
             uninstallCommandLine = $uninstallCmd
@@ -266,9 +278,7 @@ function New-IntuneWin32App {
             publishingState = "notPublished"
             msiInformation = $null
             runAs32bit = $false
-            largeIcon = @(
-                $Icon
-            )
+            largeIcon = $Icon
             rules = @(
                 $Rule
             )
@@ -296,22 +306,17 @@ function New-IntuneWin32App {
     $file = Invoke-MgGraphRequest -Method POST -Uri $fileUri -Body ($fileBody | ConvertTo-Json)  
     $ContentFileId = $file.id
 
-
     $fileUri = "https://graph.microsoft.com/beta/deviceAppManagement/mobileApps/$MobileAppID/microsoft.graph.win32LobApp/contentVersions/1/files/$ContentFileId";
     $file = Wait-ForFileProcessing $fileUri "AzureStorageUriRequest"
 
     # Upload the file to Azure Blob Storage
-    #https://learn.microsoft.com/en-us/rest/api/storageservices/put-blob?tabs=microsoft-entra-id
     $AzBlobUri = $file.azureStorageUri
-    #https://stackoverflow.com/questions/69031080/using-only-a-sas-token-to-upload-in-powershell
-    #$uri = [System.Uri] $AzBlobUri
     $headers = @{
         "x-ms-blob-type" = "BlockBlob"
         "Content-Length" = (Get-Item $AppPath).Length
         }
+    Invoke-RestMethod -Method "PUT" -uri $AzBlobUri -InFile $AppPath -Headers $headers -Verbose -UseBasicParsing
 
-    $result = Invoke-RestMethod -Method "PUT" -uri $AzBlobUri -InFile $AppPath -Headers $headers -Verbose -UseBasicParsing
- 
     # Commit the file
     $fileEncryptionInfo = @{    
         fileEncryptionInfo = @{
@@ -326,7 +331,8 @@ function New-IntuneWin32App {
     }
  
     $commitFileUri = "https://graph.microsoft.com/beta/deviceAppManagement/mobileApps/$MobileAppID/microsoft.graph.win32LobApp/contentVersions/1/files/$ContentFileId/commit"
-   
+    $commitFileUri
+    Invoke-MgGraphRequest -Method "GET" -Uri $fileUri
     Invoke-MgGraphRequest -Method POST $commitFileUri -Body ($fileEncryptionInfo |ConvertTo-Json)
     #$file = Wait-ForFileProcessing $fileUri "CommitFile"
     
