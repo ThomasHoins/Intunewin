@@ -25,6 +25,7 @@
     https://learn.microsoft.com/en-us/rest/api/storageservices/put-blob?tabs=microsoft-entra-id
     https://stackoverflow.com/questions/69031080/using-only-a-sas-token-to-upload-in-powershell
     https://learn.microsoft.com/en-us/rest/api/storageservices/naming-and-referencing-containers--blobs--and-metadata
+    https://learn.microsoft.com/de-de/troubleshoot/mem/intune/app-management/develop-deliver-working-win32-app-via-intune
 
 
     $azCopyUri = "https://aka.ms/downloadazcopy-v10-windows"
@@ -291,13 +292,16 @@ function New-IntuneWin32App {
         $MobileAppID = (New-MgDeviceAppManagementMobileApp -BodyParameter (ConvertTo-Json($params))).Id
     }
     
+    $UploadFile = Get-intuneWinFile -SourceFile $AppPath -fileName $IntuneWinMetadata.ApplicationInfo.FileName
     # Prepare File Upload to Azure Blob Storage
+    $FileName = $IntuneWinMetadata.ApplicationInfo.FileName
     $Size = [int64]$IntuneWinMetadata.ApplicationInfo.UnencryptedContentSize
+    $EncrySize = (Get-Item "$UploadFile").Length
     $fileBody =  @{ 
         "@odata.type" = "#microsoft.graph.mobileAppContentFile"
-        name = $AppPath
+        name = $FileName
         size = $Size
-        sizeEncrypted = (Get-Item $AppPath).Length
+        sizeEncrypted = $EncrySize
         manifest = $null
         isDependency = $false
     }
@@ -313,9 +317,14 @@ function New-IntuneWin32App {
     $AzBlobUri = $file.azureStorageUri
     $headers = @{
         "x-ms-blob-type" = "BlockBlob"
-        "Content-Length" = (Get-Item $AppPath).Length
+        "Content-Length" = (Get-Item $UploadFile).Length
+        "Content-Type" = "application/octet-stream"
         }
-    Invoke-RestMethod -Method "PUT" -uri $AzBlobUri -InFile $AppPath -Headers $headers -Verbose -UseBasicParsing
+    $result = Invoke-WebRequest -Method "PUT" -Uri $AzBlobUri -InFile $UploadFile -Headers $headers -Verbose
+
+    if($result.StatusCode -ne 201){
+        throw "Failed to upload file to Azure Blob Storage. Status code: $($result.StatusCode)"
+    }
 
     # Commit the file
     $fileEncryptionInfo = @{    
@@ -329,13 +338,25 @@ function New-IntuneWin32App {
             fileDigestAlgorithm = $IntuneWinMetadata.ApplicationInfo.EncryptionInfo.fileDigestAlgorithm
         }
     }
- 
+
     $commitFileUri = "https://graph.microsoft.com/beta/deviceAppManagement/mobileApps/$MobileAppID/microsoft.graph.win32LobApp/contentVersions/1/files/$ContentFileId/commit"
-    $commitFileUri
-    Invoke-MgGraphRequest -Method "GET" -Uri $fileUri
-    Invoke-MgGraphRequest -Method POST $commitFileUri -Body ($fileEncryptionInfo |ConvertTo-Json)
+
+    $result = Invoke-MgGraphRequest -Method POST $commitFileUri -Body ($fileEncryptionInfo |ConvertTo-Json)
     #$file = Wait-ForFileProcessing $fileUri "CommitFile"
-    
+
+    #$hashhex = (Get-FileHash -Path $AppPath -Algorithm SHA256).Hash $UploadFile
+
+    #$macKeyBase64 = "R+NumgdM8vOJw4LSt/nk7qa8cziVFttgSLUABSkBp7I=" # Beispielwert
+    $macKey = [Convert]::FromBase64String($IntuneWinMetadata.ApplicationInfo.EncryptionInfo.macKey)
+    $fileBytes = [System.IO.File]::ReadAllBytes($UploadFile)
+    $hmac = New-Object System.Security.Cryptography.HMACSHA256
+    $hmac.Key = $macKey
+    $hashBytes = $hmac.ComputeHash($fileBytes)
+    $base64Hash = [Convert]::ToBase64String($hashBytes)
+    $base64Hash
+
+
+
     $commitAppBody = @{ 
         "@odata.type" = "#microsoft.graph.win32LobApp"
         committedContentVersion = "1"
@@ -386,7 +407,8 @@ try {
     
     # Preserve folder name, including dots, and rename the file
     $sourceFolderName = Split-Path -Leaf $sourceDir
-    $renamedFile = "$outputDir\$($sourceFolderName).intunewin"
+    #$renamedFile = "$outputDir\$($sourceFolderName).intunewin"
+    $renamedFile = "$outputDir\Install.intunewin"
     
     # If the intunewin does not already exist, make it
     if (-not (Test-Path -Path $renamedFile)) {
@@ -399,7 +421,7 @@ try {
         if (-not (Test-Path -Path $generatedFile)) {
             throw "Generated file not found: $generatedFile"
         }
-        Move-Item -Path $generatedFile -Destination $renamedFile -Force
+        #Move-Item -Path $generatedFile -Destination $renamedFile -Force
         Write-Host "File successfully packaged as:" -ForegroundColor Green
         Write-Host $renamedFile -ForegroundColor Green
     }
