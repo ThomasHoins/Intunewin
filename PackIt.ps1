@@ -13,6 +13,8 @@
     Initial Date:   14.01.2025
     Changes:        14.01.2025 Added error handling, clean outputs, and timestamp-based renaming.
     Changes:        14.01.2025 Automatic download of IntuneWinAppUtil.exe, auto-exit after 10 seconds.
+    Changes:        15.01.2025 Added support for command-line arguments, improved error handling.
+    Changes:        24.01.2025 Added support for PowerShell 7, added creation of inune app via graph.
 
     https://learn.microsoft.com/en-us/graph/api/intune-apps-win32lobapp-create?view=graph-rest-1.0&tabs=http
     https://github.com/microsoftgraph/powershell-intune-samples
