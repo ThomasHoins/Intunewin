@@ -8,7 +8,7 @@
     If the IntuneWinAppUtil.exe file is not found, it will be automatically downloaded from the official Microsoft repository.
 
 .NOTES
-    Version:        1.1
+    Version:        2.0
     Author:         Thomas Hoins (DATAGROUP OIT)
     Initial Date:   14.01.2025
     Changes:        14.01.2025 Added error handling, clean outputs, and timestamp-based renaming.
@@ -33,7 +33,7 @@
     Modules:
     Microsoft.Graph.Authentication 
     Microsoft.Graph.Devices.CorporateManagement
-    #Az.Storage
+    Az.Storage
 
 .LINK
     [Your Documentation or GitHub Link Here]
@@ -71,7 +71,6 @@ param (
 If (-Not($OutputDir)){$OutputDir="$PSScriptRoot\Output"}
 
 #------------------------ Functions ------------------------
-#===========================================================
 
 function Wait-ForFileProcessing {
     [cmdletbinding()]
@@ -79,6 +78,7 @@ function Wait-ForFileProcessing {
         $fileUri,
         $stage
     )
+    
     $attempts = 600
     $successState = "$($stage)Success"
     $pendingState = "$($stage)Pending"
@@ -126,27 +126,11 @@ Function Get-IntuneWinFile{
 }
 
 function Get-IntuneWinMetadata{
-    <#
-    .SYNOPSIS
-        Retrieves meta data from the detection.xml file inside the packaged Win32 application .intunewin file.
-
-    .DESCRIPTION
-        Retrieves meta data from the detection.xml file inside the packaged Win32 application .intunewin file.
-
-    .PARAMETER FilePath
-        Specify an existing local path to where the Win32 app .intunewin file is located.
-
-    .EXAMPLE
-        Get-IntuneWinMetadata -FilePath "somePath\BlaBla.intunewin"
-    .NOTES
-        shortened version of 
-        https://github.com/MSEndpointMgr/IntuneWin32App/blob/master/Public/Get-IntuneWin32AppMetaData.ps1
-    #>
-
     param (
         [Parameter(Mandatory = $true)]
         [string]$FilePath
     )
+
     if (Test-Path -Path $FilePath) {
         # Check if file extension is intunewin
         if (([System.IO.Path]::GetExtension((Split-Path -Path $FilePath -Leaf))) -ne ".intunewin") {
@@ -182,25 +166,6 @@ function Get-IntuneWinMetadata{
 }
 
 function New-IntuneWin32App {
-    <#
-    .SYNOPSIS
-        This Function creates a new Intune Win32 App.
-
-    .DESCRIPTION
-        This takes the input path for the application and icon, 
-        and tries th extract more information from the application folder to create
-        a new Intune Win32 App.
-
-    .PARAMETER AppPath
-        Path to the application folder.
-
-    .PARAMETER IconName
-        Name of the icon file.
-
-    .EXAMPLE
-        New-IntuneWin32App -AppPath "Value1" -IconName "Value2"
-    #>
-
     [CmdletBinding()]
     param (
         [Parameter(Mandatory = $true)]
@@ -213,7 +178,6 @@ function New-IntuneWin32App {
         [string]$IconName="Appicon.png"
     )
 
-# Function Code
     $Iconpath = "$SourceDir\$IconName"
     $installCmd = "install.bat"
     $uninstallCmd = "uninstall.bat"
@@ -227,13 +191,17 @@ function New-IntuneWin32App {
 
     # Create the Win32 App in Intune if it does not exist
     $MobileAppID=(Get-MgDeviceAppManagementMobileApp | Where-Object {$_.DisplayName -eq $displayName}).Id
+    If ($PSVersionTable.PSVersion.Major -lt 7){
+        $ImageValue = [Convert]::ToBase64String((Get-Content -Path $Iconpath -Encoding Byte))
+    }
+    else {
+        $ImageValue = [Convert]::ToBase64String((Get-Content -Path $Iconpath -AsByteStream -Raw))
+    }
     If (-not $MobileAppID){
         $Icon = @{
             "@odata.type" = "microsoft.graph.mimeContent"
             type= "image/png"
-            #value = [Convert]::ToBase64String((Get-Content -Path $Iconpath -Encoding Byte))
-            value = [Convert]::ToBase64String((Get-Content -Path $Iconpath-AsByteStream -Raw))
-            #Das klappt noch nicht
+            value =  $ImageValue
             }
         $Description = $(get-childitem $SourceDir -Filter "Description*" | get-content -Encoding UTF8 |Out-String)
         
@@ -462,7 +430,7 @@ Write-Host "==========================================" -ForegroundColor Green
 Write-Host "intunewin generated successfully!" -ForegroundColor Green
 Write-Host "==========================================" -ForegroundColor Green
 
-Disconnect-MgGraph
+Disconnect-MgGraph -ErrorAction SilentlyContinue
 $TenantID = "22c3b957-8768-4139-8b5e-279747e3ecbf"
 $AppId = "3997b08b-ee9c-4528-9afd-dfccb3ef2535"
 $AppSecret = "u9D8Q~HX31tRrc-tPwojE02g8OvcP4VqSz5H2a7p"
