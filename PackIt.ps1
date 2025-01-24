@@ -220,9 +220,8 @@ function New-IntuneWin32App {
     $installCmdString= get-content "$SourceDir\$installCmd"
     $displayName = ($installCmdString -match "REM DESCRIPTION").Replace("REM DESCRIPTION","").Trim()
     $publisher = ($installCmdString -match "REM MANUFACTURER").Replace("REM MANUFACTURER","").Trim()
-    $fileName = ($installCmdString -match "REM FILENAME").Replace("REM FILENAME","").Trim()
+    If ($installCmdString -match "REM FILENAME"){$fileName = ($installCmdString -match "REM FILENAME").Replace("REM FILENAME","").Trim()}
     $version = ($installCmdString -match "REM VERSION").Replace("REM VERSION","").Trim()
-    # [System.Convert]::ToBase64String([System.IO.File]::ReadAllBytes("$($Iconpath)"))
 
     $IntuneWinMetadata = Get-IntuneWinMetadata -FilePath $AppPath
 
@@ -232,7 +231,9 @@ function New-IntuneWin32App {
         $Icon = @{
             "@odata.type" = "microsoft.graph.mimeContent"
             type= "image/png"
-            value = [Convert]::ToBase64String((Get-Content -Path $Iconpath -Encoding Byte))
+            #value = [Convert]::ToBase64String((Get-Content -Path $Iconpath -Encoding Byte))
+            value = [Convert]::ToBase64String((Get-Content -Path $Iconpath-AsByteStream -Raw))
+            #Das klappt noch nicht
             }
         $Description = $(get-childitem $SourceDir -Filter "Description*" | get-content -Encoding UTF8 |Out-String)
         
@@ -248,15 +249,26 @@ function New-IntuneWin32App {
         Else {
             If($fileName){
                 $filePath = (Get-ChildItem -Path "C:\Program*"  -Recurse -ErrorAction SilentlyContinue -Include $fileName -Depth 3).FullName
+                $Rule=@{
+                    "@odata.type"= "microsoft.graph.win32LobAppFileSystemRule"
+                    "ruleType"= "detection"
+                    "path"= (Split-Path -Path $filePath -Parent)
+                    "fileOrFolderName"= (Split-Path -Path $filePath -Leaf)
+                    "check32BitOn64System"= $true
+                    "operationType"= "version"
+                    "operator"= "greaterThanOrEqual"
+                    "comparisonValue"= $version
+                    }
             }
             Else{
                 $filePath =""
+                Write-Host "No file path could be found. Please Update the file Rule manually!" -ForegroundColor Red
             }
             $Rule=@{
                 "@odata.type"= "microsoft.graph.win32LobAppFileSystemRule"
                 "ruleType"= "detection"
-                "path"= (Split-Path -Path $filePath -Parent)
-                "fileOrFolderName"= (Split-Path -Path $filePath -Leaf)
+                "path"= ""
+                "fileOrFolderName"= ""
                 "check32BitOn64System"= $true
                 "operationType"= "version"
                 "operator"= "greaterThanOrEqual"
@@ -293,6 +305,7 @@ function New-IntuneWin32App {
     }
     
     $UploadFile = Get-intuneWinFile -SourceFile $AppPath -fileName $IntuneWinMetadata.ApplicationInfo.FileName
+    #$UploadFile = $AppPath
     # Prepare File Upload to Azure Blob Storage
     $FileName = $IntuneWinMetadata.ApplicationInfo.FileName
     $Size = [int64]$IntuneWinMetadata.ApplicationInfo.UnencryptedContentSize
@@ -317,14 +330,28 @@ function New-IntuneWin32App {
     $AzBlobUri = $file.azureStorageUri
     $headers = @{
         "x-ms-blob-type" = "BlockBlob"
-        "Content-Length" = (Get-Item $UploadFile).Length
+        "Content-Length" = $EncrySize
         "Content-Type" = "application/octet-stream"
         }
-    $result = Invoke-WebRequest -Method "PUT" -Uri $AzBlobUri -InFile $UploadFile -Headers $headers -Verbose
+        
+    #This did not work in any Version of PS
+    #$result = Invoke-WebRequest -Method "PUT" -Uri $AzBlobUri -InFile $UploadFile -Headers $headers -Verbose -HttpVersion 2.0
 
-    if($result.StatusCode -ne 201){
-        throw "Failed to upload file to Azure Blob Storage. Status code: $($result.StatusCode)"
-    }
+    # Upload the file to Azure Blob Storage (this actually worked with PS7)
+    [System.Uri]$uriObject = $AzBlobUri 
+    $storageAccountName = $uriObject.DnsSafeHost.Split(".")[0]
+    $sasToken = $uriObject.Query.Substring(1)
+    $uploadPath = $uriObject.LocalPath.Substring(1)
+    $container = $uploadPath.Split("/")[0]
+    $blobPath = $uploadPath.Substring($container.Length+1,$uploadPath.Length - $container.Length-1)
+    $storageContext = New-AzStorageContext -StorageAccountName $storageAccountName -SasToken $sasToken
+    $blobUpload = Set-AzStorageBlobContent -File $UploadFile -Container $container -Context $storageContext -Blob $blobPath -Force
+    Write-Host "Upload finished! Details: Name $($blobUpload.Name), ContentType $($blobUpload.ContentType), Length $($blobUpload.Length), LastModified $($blobUpload.LastModified)"
+
+
+    #if($result.StatusCode -ne 201){
+    #    throw "Failed to upload file to Azure Blob Storage. Status code: $($blobUpload.StatusCode)"
+    #}
 
     # Commit the file
     $fileEncryptionInfo = @{    
@@ -340,31 +367,22 @@ function New-IntuneWin32App {
     }
 
     $commitFileUri = "https://graph.microsoft.com/beta/deviceAppManagement/mobileApps/$MobileAppID/microsoft.graph.win32LobApp/contentVersions/1/files/$ContentFileId/commit"
-
+    $commitFileUri
     $result = Invoke-MgGraphRequest -Method POST $commitFileUri -Body ($fileEncryptionInfo |ConvertTo-Json)
-    #$file = Wait-ForFileProcessing $fileUri "CommitFile"
 
-    #$hashhex = (Get-FileHash -Path $AppPath -Algorithm SHA256).Hash $UploadFile
+    $file = Wait-ForFileProcessing $fileUri "commitFile"
 
-    #$macKeyBase64 = "R+NumgdM8vOJw4LSt/nk7qa8cziVFttgSLUABSkBp7I=" # Beispielwert
-    $macKey = [Convert]::FromBase64String($IntuneWinMetadata.ApplicationInfo.EncryptionInfo.macKey)
-    $fileBytes = [System.IO.File]::ReadAllBytes($UploadFile)
-    $hmac = New-Object System.Security.Cryptography.HMACSHA256
-    $hmac.Key = $macKey
-    $hashBytes = $hmac.ComputeHash($fileBytes)
-    $base64Hash = [Convert]::ToBase64String($hashBytes)
-    $base64Hash
+    If($file.uploadState -ne "commitFileSuccess"){
+        throw "Failed to commit file to Azure Blob Storage. Status code: $($file.uploadState)"
+    }   
 
-
-
+    # Commit the App
     $commitAppBody = @{ 
         "@odata.type" = "#microsoft.graph.win32LobApp"
         committedContentVersion = "1"
         }   
     $commitUri ="https://graph.microsoft.com/beta/deviceAppManagement/mobileApps/$MobileAppID"
-    $response = Invoke-MgGraphRequest -Method "PATCH" $commitUri -Body ($commitAppBody | ConvertTo-Json) -ContentType 'application/json'
- 
-
+    $result = Invoke-MgGraphRequest -Method PATCH $commitUri -Body ($commitAppBody | ConvertTo-Json) -ContentType 'application/json'
 }
 
 #------------------------ Main Script ------------------------
