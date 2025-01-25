@@ -47,6 +47,19 @@
 .PARAMETER OutputDir
     Specifies the directory where the .intunewin file will be saved. Default is the "Output" folder in the script's directory.
 
+.PARAMETER IconName
+    Specifies the full path of the icon file to use. Default is "Appicon.png".
+    The script will search for the icon file in the source directory and its subfolders. And use the first found *.png, *.jpg or *.jpeg file.
+
+.PARAMETER AppPath
+    Specifies the path to the application file.
+
+.PARAMETER InstallCmd
+    Specifies the name of the installation command file. Default is "install.bat".
+
+.PARAMETER UninstallCmd
+    Specifies the name of the uninstallation command file. Default is "uninstall.bat".
+
 .INPUTS
     Accepts a folder path as input, either via command-line arguments or drag-and-drop.
 
@@ -197,7 +210,6 @@ function Get-IntuneWinFileAndMetadata {
     }
 }
 
-
 function New-IntuneWin32App {
     [CmdletBinding()]
     param (
@@ -226,6 +238,7 @@ function New-IntuneWin32App {
         $Iconpath = ""
     }
 
+    # Get the Metadata from the install.bat
     $installCmd = "install.bat"
     $uninstallCmd = "uninstall.bat"
     $installCmdString= get-content "$SourceDir\$installCmd"
@@ -297,18 +310,6 @@ function New-IntuneWin32App {
                 "comparisonValue"= $version
                 }
         }
-        <#
-        $msiInformation = @{
-            "packageType" = "$MsiPackageType"
-            "productCode" = "$MsiProductCode"
-            "productName" = "$MsiProductName"
-            "productVersion" = "$MsiProductVersion"
-            "publisher" = "$MsiPublisher"
-            "requiresReboot" = "$MsiRequiresReboot"
-            "upgradeCode" = "$MsiUpgradeCode"
-        }
-         #>
-
     
         $params = @{
             "@odata.type" = "microsoft.graph.win32LobApp"
