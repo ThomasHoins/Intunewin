@@ -8,13 +8,14 @@
     If the IntuneWinAppUtil.exe file is not found, it will be automatically downloaded from the official Microsoft repository.
 
 .NOTES
-    Version:        2.0
+    Version:        2.1
     Author:         Thomas Hoins (DATAGROUP OIT)
     Initial Date:   14.01.2025
     Changes:        14.01.2025 Added error handling, clean outputs, and timestamp-based renaming.
     Changes:        14.01.2025 Automatic download of IntuneWinAppUtil.exe, auto-exit after 10 seconds.
     Changes:        15.01.2025 Added support for command-line arguments, improved error handling.
     Changes:        24.01.2025 Added support for PowerShell 7, added creation of inune app via graph.
+    Changes:        24.01.2025 Added support for Icon detection, added support for Version info.
 
     https://learn.microsoft.com/en-us/graph/api/intune-apps-win32lobapp-create?view=graph-rest-1.0&tabs=http
     https://github.com/microsoftgraph/powershell-intune-samples
@@ -75,10 +76,13 @@ If (-Not($OutputDir)){$OutputDir="$PSScriptRoot\Output"}
 #------------------------ Functions ------------------------
 
 function Wait-ForFileProcessing {
+    # Wait for the file to be processed we will check the file upload state every 10 seconds
     [cmdletbinding()]
     param (
-        $fileUri,
-        $stage
+        [Parameter(Mandatory = $true)]
+        [string]$fileUri,
+        [Parameter(Mandatory = $true)]
+        [string]$stage
     )
     
     $attempts = 600
@@ -103,69 +107,96 @@ function Wait-ForFileProcessing {
     $file
 }
 
-
-Function Get-IntuneWinFile{
-    param(
-    [Parameter(Mandatory=$true)]
-    $SourceFile,
-    [Parameter(Mandatory=$true)]
-    $fileName
-    )
-
-    $Folder = "win32"
-    $Directory = [System.IO.Path]::GetDirectoryName("$SourceFile")
-    if(-not(Test-Path "$Directory\$folder")){
-        New-Item -ItemType Directory -Path "$Directory" -Name "$folder" | Out-Null
-    }
-
-    Add-Type -Assembly System.IO.Compression.FileSystem
-    $zip = [IO.Compression.ZipFile]::OpenRead("$SourceFile")
-    $zip.Entries | Where-Object {$_.Name -like "$filename" } | ForEach-Object {
-        [System.IO.Compression.ZipFileExtensions]::ExtractToFile($_, "$Directory\$folder\$filename", $true)
-        }
-    $zip.Dispose()
-    return "$Directory\$folder\$filename"
-}
-
-function Get-IntuneWinMetadata{
+function Get-IntuneWinFileAndMetadata {
     param (
         [Parameter(Mandatory = $true)]
-        [string]$FilePath
+        [string]$FilePath   # Path to the .intunewin file to extract
     )
 
-    if (Test-Path -Path $FilePath) {
-        # Check if file extension is intunewin
-        if (([System.IO.Path]::GetExtension((Split-Path -Path $FilePath -Leaf))) -ne ".intunewin") {
-            throw "Given file name '$(Split-Path -Path $FilePath -Leaf)'contains an unsupported file extension. Supported extension is '.intunewin'"
+    # Error handling for invalid or missing file
+    if (-not (Test-Path -Path $FilePath)) {
+        throw "File does not exist: $FilePath"
+    }
+
+    # Error handling for unsupported file extension
+    if (([System.IO.Path]::GetExtension((Split-Path -Path $FilePath -Leaf))) -ne ".intunewin") {
+        throw "The file '$($FilePath)' does not have a supported extension. Only '.intunewin' files are supported."
+    }
+
+    # Initialize the extraction folder and file paths
+
+    $Directory = [System.IO.Path]::GetDirectoryName($FilePath)
+    $Folder = "win32"
+    $ExtractedFilePath = ""
+
+    # Create the folder if it does not exist
+    try {
+        if (-not (Test-Path "$Directory\$Folder")) {New-Item -ItemType Directory -Path "$Directory" -Name $Folder | Out-Null}
+    }
+    catch {
+        throw "Error creating extraction folder '$Folder'. Error: $_"
+    }
+
+    # opening the .intunewin file as a ZIP
+    try {
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        $zip = [System.IO.Compression.ZipFile]::OpenRead($FilePath)
+    }
+    catch {
+        throw "Error opening the file '$FilePath' as a ZIP archive. Error: $_"
+    }
+
+    # Extract the file 
+    $FileName = "IntunePackage.intunewin"   # Name of the file to extract from the .intunewin archive
+    try {
+        $zip.Entries | Where-Object { $_.Name -like $FileName } | ForEach-Object {
+            $ExtractedFilePath = "$Directory\$Folder\$FileName"
+            [System.IO.Compression.ZipFileExtensions]::ExtractToFile($_, $ExtractedFilePath, $true)
         }
     }
-    else {
-        throw "File or folder does not exist"
+    catch {
+        throw "Error extracting the file '$FileName' from the archive '$FilePath'. Error: $_"
     }
-    $null = Add-Type -AssemblyName "System.IO.Compression.FileSystem" -ErrorAction Stop -Verbose:$false
-    try {
-        $IntuneWin32AppFile = [System.IO.Compression.ZipFile]::OpenRead($FilePath)
-        if ($null -ne $IntuneWin32AppFile) {
-            $DetectionXMLFile = $IntuneWin32AppFile.Entries | Where-Object { $_.Name -like "detection.xml" }
-            $FileStream = $DetectionXMLFile.Open()
 
-            # Construct new stream reader, pass file stream and read XML content to the end of the file
-            $StreamReader = New-Object -TypeName "System.IO.StreamReader" -ArgumentList $FileStream -ErrorAction Stop
-            $DetectionXMLContent = [xml]($StreamReader.ReadToEnd())
+    # Error handling for reading detection.xml content (or other XML file)
+    $FileName = "detection.xml"
+    $DetectionXMLContent = $null
+    try {
+        $DetectionXMLFile = $zip.Entries | Where-Object { $_.Name -like "detection.xml" }
+        if ($DetectionXMLFile) {
+            $FileStream = $DetectionXMLFile.Open()
             
-            # Close and dispose objects to preserve memory usage
+            # Construct a StreamReader to read the XML content
+            $StreamReader = New-Object -TypeName "System.IO.StreamReader" -ArgumentList $FileStream
+            $DetectionXMLContent = [xml]($StreamReader.ReadToEnd())
+
+            # Close the streams
             $FileStream.Close()
             $StreamReader.Close()
-            $IntuneWin32AppFile.Dispose()
-
-            # Handle return value with XML content from detection.xml
-            return $DetectionXMLContent
+        }
+        else {
+            throw "The file 'detection.xml' was not found in the archive '$FilePath'."
         }
     }
-    catch [System.Exception] {
-        Write-Warning -Message "An error occurred while reading application information from detection.xml file. Error message: $($_.Exception.Message)"
+    catch {
+        throw "Error reading 'detection.xml' content from the archive '$FilePath'. Error: $_"
+    }
+
+    # Dispose the zip object to free up resources
+    try {
+        $zip.Dispose()
+    }
+    catch {
+        Write-Warning "Error disposing of the zip object. Error: $_"
+    }
+
+    # Return both extracted file path and XML content (if any)
+    return @{ 
+        ExtractedFile = $ExtractedFilePath
+        DetectionXMLContent = $DetectionXMLContent
     }
 }
+
 
 function New-IntuneWin32App {
     [CmdletBinding()]
@@ -177,10 +208,24 @@ function New-IntuneWin32App {
         [string]$SourceDir,
 
         [Parameter(Mandatory = $false)]
-        [string]$IconName="Appicon.png"
+        [string]$IconName
     )
+    # If no icon is supplied Search for the Icon
+    If ([string]::IsNullOrEmpty($IconName)){
+        $Iconpath=(Get-childitem -Path $SourceDir -Include *.png,*.jpg,*jpeg -Recurse| Select-Object -First 1).FullName
+    }
+    If ([string]::IsNullOrEmpty($Iconpath)){
+        Write-Host "No Icon found. Please Update the Icon manually!" -ForegroundColor Red
+    }
+    If ($Iconpath -like "*.jpg" -or $Iconpath -like "*.jpeg")
+        {$IconType = "image/jpeg"}
+    elseif ($Iconpath -like "*.png")
+        {$IconType = "image/png"}
+    else {
+        Write-Host "No Icon found. Please Update the Icon manually!" -ForegroundColor Red
+        $Iconpath = ""
+    }
 
-    $Iconpath = "$SourceDir\$IconName"
     $installCmd = "install.bat"
     $uninstallCmd = "uninstall.bat"
     $installCmdString= get-content "$SourceDir\$installCmd"
@@ -188,23 +233,30 @@ function New-IntuneWin32App {
     $publisher = ($installCmdString -match "REM MANUFACTURER").Replace("REM MANUFACTURER","").Trim()
     If ($installCmdString -match "REM FILENAME"){$fileName = ($installCmdString -match "REM FILENAME").Replace("REM FILENAME","").Trim()}
     $version = ($installCmdString -match "REM VERSION").Replace("REM VERSION","").Trim()
-
-    $IntuneWinMetadata = Get-IntuneWinMetadata -FilePath $AppPath
+    $IntuneWinData = Get-IntuneWinFileAndMetadata -FilePath $AppPath
+    $IntuneWinMetadata = $IntuneWinData.DetectionXMLContent
 
     # Create the Win32 App in Intune if it does not exist
     $MobileAppID=(Get-MgDeviceAppManagementMobileApp | Where-Object {$_.DisplayName -eq $displayName}).Id
-    If ($PSVersionTable.PSVersion.Major -lt 7){
-        $ImageValue = [Convert]::ToBase64String((Get-Content -Path $Iconpath -Encoding Byte))
-    }
-    else {
-        $ImageValue = [Convert]::ToBase64String((Get-Content -Path $Iconpath -AsByteStream -Raw))
-    }
+
     If (-not $MobileAppID){
-        $Icon = @{
-            "@odata.type" = "microsoft.graph.mimeContent"
-            type= "image/png"
-            value =  $ImageValue
+        If ($Iconpath){
+            If ($PSVersionTable.PSVersion.Major -lt 7){
+                $ImageValue = [Convert]::ToBase64String((Get-Content -Path $Iconpath -Encoding Byte))
             }
+            else {
+                $ImageValue = [Convert]::ToBase64String((Get-Content -Path $Iconpath -AsByteStream -Raw))
+            }
+            $Icon = @{
+                "@odata.type" = "microsoft.graph.mimeContent"
+                type = $IconType
+                value =  $ImageValue
+                }
+            }
+        Else {
+            $Icon = $null
+        }
+
         $Description = $(get-childitem $SourceDir -Filter "Description*" | get-content -Encoding UTF8 |Out-String)
         
         If(($installCmdString -match "msiexec").Count -gt 0){
@@ -245,19 +297,29 @@ function New-IntuneWin32App {
                 "comparisonValue"= $version
                 }
         }
+        <#
+        $msiInformation = @{
+            "packageType" = "$MsiPackageType"
+            "productCode" = "$MsiProductCode"
+            "productName" = "$MsiProductName"
+            "productVersion" = "$MsiProductVersion"
+            "publisher" = "$MsiPublisher"
+            "requiresReboot" = "$MsiRequiresReboot"
+            "upgradeCode" = "$MsiUpgradeCode"
+        }
+         #>
+
     
         $params = @{
             "@odata.type" = "microsoft.graph.win32LobApp"
             displayName = $displayName
             publisher = $publisher
-            #displayVersion = $version
             description = $Description
             installCommandLine = $installCmd
             uninstallCommandLine = $uninstallCmd
             applicableArchitectures = "x64"
             setupFilePath = $IntuneWinMetadata.ApplicationInfo.SetupFile
             fileName = $IntuneWinMetadata.ApplicationInfo.FileName
-            #size = [int]$IntuneWinMetadata.ApplicationInfo.UnencryptedContentSize
             publishingState = "notPublished"
             msiInformation = $null
             runAs32bit = $false
@@ -270,13 +332,19 @@ function New-IntuneWin32App {
                 runAsAccount = "system" #system, user
                 deviceRestartBehavior = "basedOnReturnCode" #basedOnReturnCode, allow, suppress, force
             }
+            returnCodes  = @(
+                @{"returnCode" = 0;"type" = "success"}, `
+                @{"returnCode" = 1707;"type" = "success"}, `
+                @{"returnCode" = 3010;"type" = "softReboot"}, `
+                @{"returnCode" = 1641;"type" = "hardReboot"}, `
+                @{"returnCode" = 1618;"type" = "retry"}
+                )
         }
         $MobileAppID = (New-MgDeviceAppManagementMobileApp -BodyParameter (ConvertTo-Json($params))).Id
     }
-    
-    $UploadFile = Get-intuneWinFile -SourceFile $AppPath -fileName $IntuneWinMetadata.ApplicationInfo.FileName
-    #$UploadFile = $AppPath
+
     # Prepare File Upload to Azure Blob Storage
+    $UploadFile =$IntuneWinData.ExtractedFile
     $FileName = $IntuneWinMetadata.ApplicationInfo.FileName
     $Size = [int64]$IntuneWinMetadata.ApplicationInfo.UnencryptedContentSize
     $EncrySize = (Get-Item "$UploadFile").Length
@@ -290,38 +358,37 @@ function New-IntuneWin32App {
     }
     # Get the Content file ID
     $fileUri = "https://graph.microsoft.com/beta/deviceAppManagement/mobileApps/$MobileAppID/microsoft.graph.win32LobApp/contentVersions/1/files"
-    $file = Invoke-MgGraphRequest -Method POST -Uri $fileUri -Body ($fileBody | ConvertTo-Json)  
-    $ContentFileId = $file.id
+    Try{
+        $file = Invoke-MgGraphRequest -Method POST -Uri $fileUri -Body ($fileBody | ConvertTo-Json) 
+        $ContentFileId = $file.id
+    }
+    Catch{
+        $file = Invoke-MgGraphRequest -Method Get -Uri $fileUri
+        If($file.value.isCommitted -eq "True"){
+            Write-Host "This App is already committed. Please create a new App!" -ForegroundColor Green
+            Exit 0
+        }
+        Write-Host "App already exists. Using existing App." -ForegroundColor Yellow
+       }
 
+
+    # Wait for the AzureStorageUriRequest to be processed
+    Write-Host "Uploading file to Azure Blob Storage..." -ForegroundColor Yellow
     $fileUri = "https://graph.microsoft.com/beta/deviceAppManagement/mobileApps/$MobileAppID/microsoft.graph.win32LobApp/contentVersions/1/files/$ContentFileId";
     $file = Wait-ForFileProcessing $fileUri "AzureStorageUriRequest"
-
-    # Upload the file to Azure Blob Storage
-    $AzBlobUri = $file.azureStorageUri
-    $headers = @{
-        "x-ms-blob-type" = "BlockBlob"
-        "Content-Length" = $EncrySize
-        "Content-Type" = "application/octet-stream"
-        }
-        
-    #This did not work in any Version of PS
-    #$result = Invoke-WebRequest -Method "PUT" -Uri $AzBlobUri -InFile $UploadFile -Headers $headers -Verbose -HttpVersion 2.0
-
-    # Upload the file to Azure Blob Storage (this actually worked with PS7)
-    [System.Uri]$uriObject = $AzBlobUri 
+       
+    # Upload the file to Azure Blob Storage 
+    # Get the SAS Token and Storage Account Name
+    [System.Uri]$uriObject = $file.azureStorageUri
     $storageAccountName = $uriObject.DnsSafeHost.Split(".")[0]
     $sasToken = $uriObject.Query.Substring(1)
     $uploadPath = $uriObject.LocalPath.Substring(1)
     $container = $uploadPath.Split("/")[0]
     $blobPath = $uploadPath.Substring($container.Length+1,$uploadPath.Length - $container.Length-1)
     $storageContext = New-AzStorageContext -StorageAccountName $storageAccountName -SasToken $sasToken
+    # do the actual file to Azure Blob Storage
     $blobUpload = Set-AzStorageBlobContent -File $UploadFile -Container $container -Context $storageContext -Blob $blobPath -Force
-    Write-Host "Upload finished! Details: Name $($blobUpload.Name), ContentType $($blobUpload.ContentType), Length $($blobUpload.Length), LastModified $($blobUpload.LastModified)"
-
-
-    #if($result.StatusCode -ne 201){
-    #    throw "Failed to upload file to Azure Blob Storage. Status code: $($blobUpload.StatusCode)"
-    #}
+    Write-Host "Upload finished! Details: Name $($blobUpload.Name), ContentType $($blobUpload.ContentType), Length $($blobUpload.Length), LastModified $($blobUpload.LastModified)" -ForegroundColor Green
 
     # Commit the file
     $fileEncryptionInfo = @{    
@@ -337,8 +404,14 @@ function New-IntuneWin32App {
     }
 
     $commitFileUri = "https://graph.microsoft.com/beta/deviceAppManagement/mobileApps/$MobileAppID/microsoft.graph.win32LobApp/contentVersions/1/files/$ContentFileId/commit"
-    $commitFileUri
-    $result = Invoke-MgGraphRequest -Method POST $commitFileUri -Body ($fileEncryptionInfo |ConvertTo-Json)
+    try{
+        Invoke-MgGraphRequest -Method POST $commitFileUri -Body ($fileEncryptionInfo |ConvertTo-Json)
+    }
+    catch{
+        Write-Host "Failed to commit file to Azure Blob Storage. Status code: $($_.Exception.Message)" -ForegroundColor Red
+        Exit 1
+    }
+    Write-Host "Waiting for the file to be committed..." -ForegroundColor Yellow
 
     $file = Wait-ForFileProcessing $fileUri "commitFile"
 
@@ -352,7 +425,28 @@ function New-IntuneWin32App {
         committedContentVersion = "1"
         }   
     $commitUri ="https://graph.microsoft.com/beta/deviceAppManagement/mobileApps/$MobileAppID"
-    $result = Invoke-MgGraphRequest -Method PATCH $commitUri -Body ($commitAppBody | ConvertTo-Json) -ContentType 'application/json'
+    try{
+    Invoke-MgGraphRequest -Method PATCH $commitUri -Body ($commitAppBody | ConvertTo-Json) -ContentType 'application/json'
+    }   
+    catch{
+        Write-Host "Failed to commit file to App. Status code: $($_.Exception.Message)" -ForegroundColor Red
+        Exit 1
+    }
+    Write-Host "App successfully committed!" -ForegroundColor Green
+
+    $displayversionBody = @{
+        "@odata.type" = "#microsoft.graph.win32LobApp"
+        displayVersion = $version
+   }
+   $fileUri = "https://graph.microsoft.com/beta/deviceAppManagement/mobileApps/$MobileAppID"
+   Try{
+       $null = Invoke-MgGraphRequest -Method PATCH -Uri $fileUri -Body ($displayversionBody | ConvertTo-Json) 
+   }
+   Catch{
+       Write-Host "Failed to update the display version. Status code: $($_.Exception.Message)" -ForegroundColor Red
+       Exit 1
+   }
+
 }
 
 #------------------------ Main Script ------------------------
