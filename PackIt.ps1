@@ -8,7 +8,7 @@
     If the IntuneWinAppUtil.exe file is not found, it will be automatically downloaded from the official Microsoft repository.
 
 .NOTES
-    Version:        2.3
+    Version:        2.4
     Author:         Thomas Hoins (DATAGROUP OIT)
     Initial Date:   14.01.2025
     Changes:        14.01.2025 Added error handling, clean outputs, and timestamp-based renaming.
@@ -18,7 +18,8 @@
     Changes:        24.01.2025 Added support for Icon detection, added support for Version info.
     Changes:        25.01.2025 Added notes and owner to the App.
     Changes:        25.01.2025 Added support for MSI detection.
-    Changes:        25.01.2025 Added some Error handling and improved the output. Updated the documentation.
+    Changes:        26.01.2025 Added some Error handling and improved the output. Updated the documentation.
+    Changes:        26.01.2025 Some more Bug fixes and improvements.
 
     https://learn.microsoft.com/en-us/graph/api/intune-apps-win32lobapp-create?view=graph-rest-1.0&tabs=http
     https://github.com/microsoftgraph/powershell-intune-samples
@@ -87,12 +88,17 @@ param (
     [bool]$Upload= $true,  
     
     [Parameter(Mandatory = $false)]
-    [bool]$IconName, 
+    [string]$IconName, 
 
     [Parameter(Mandatory = $false)]
     [string]$InstallCmd="Install.bat"
 )
-If (-Not($OutputDir)){$OutputDir=(Split-Path ($SourceDir)}
+# Fix for dropped on folders with spaces
+If ($PSBoundParameters.ContainsKey('SourceDir')){
+    $SourceDir = [string]$MyInvocation.BoundParameters.Values
+    $OutputDir = "C:\Intunewin\Output"}
+If (-Not($OutputDir)){$OutputDir="$(Split-Path ($SourceDir))\Output"}
+
 
 #------------------------ Functions ------------------------
 
@@ -253,28 +259,6 @@ function New-IntuneWin32App {
     $ClientSecretCredential = New-Object -TypeName System.Management.Automation.PSCredential -ArgumentList $AppId, $SecureClientSecret
     Connect-MgGraph -TenantId $TenantID -ClientSecretCredential $ClientSecretCredential -NoWelcome
 
-    # If no icon is supplied Search for the Icon
-
-    If ([string]::IsNullOrEmpty($IconName)){
-        Write-Host "Searching for Icon..." -ForegroundColor Yellow
-        $Iconpath=(Get-childitem -Path $SourceDir -Include *.png,*.jpg,*jpeg -Recurse| Select-Object -First 1).FullName
-    }
-    If ([string]::IsNullOrEmpty($Iconpath)){
-        Write-Host "No Icon found. Please Update the Icon manually!" -ForegroundColor Red
-    }
-    If ($Iconpath -like "*.jpg" -or $Iconpath -like "*.jpeg"){
-        $IconType = "image/jpeg"
-        Write-Host "Icon found: $Iconpath" -ForegroundColor Green
-    }
-    elseif ($Iconpath -like "*.png"){
-        $IconType = "image/png"
-        Write-Host "Icon found: $Iconpath" -ForegroundColor Green
-    }
-    else {
-        Write-Host "No Icon found. Please Update the Icon manually!" -ForegroundColor Red
-        $Iconpath = ""
-    }
-
     # Get the Metadata from the install.bat
     $installCmd = "install.bat"
     $uninstallCmd = "uninstall.bat"
@@ -292,6 +276,26 @@ function New-IntuneWin32App {
     $MobileAppID=(Get-MgDeviceAppManagementMobileApp | Where-Object {$_.DisplayName -eq $displayName}).Id
 
     If (-not $MobileAppID){
+        # If no icon is supplied Search for the Icon
+        If ([string]::IsNullOrEmpty($IconName)){
+            Write-Host "Searching for Icon..." -ForegroundColor Yellow
+            $Iconpath=(Get-childitem -Path $SourceDir -Include *.png,*.jpg,*jpeg -Recurse| Select-Object -First 1).FullName
+        }
+        If ($Iconpath -like "*.jpg" -or $Iconpath -like "*.jpeg"){
+            $IconType = "image/jpeg"
+            Write-Host "Icon found: $Iconpath" -ForegroundColor Green
+        }
+        elseif ($Iconpath -like "*.png"){
+            $IconType = "image/png"
+            Write-Host "Icon found: $Iconpath" -ForegroundColor Green
+        }
+        else {
+            $Iconpath = ""
+        }
+        If ([string]::IsNullOrEmpty($Iconpath)){
+            Write-Host "No Icon found. Please Update the Icon manually!" -ForegroundColor Red
+        }
+
         If ($Iconpath){
             If ($PSVersionTable.PSVersion.Major -lt 7){
                 $ImageValue = [Convert]::ToBase64String((Get-Content -Path $Iconpath -Encoding Byte))
@@ -308,9 +312,23 @@ function New-IntuneWin32App {
         Else {
             $Icon = $null
         }
+        $Text= $Descr = ""
+        $Description = $(get-childitem $SourceDir -Filter "Description*")
+        If (-Not $Description){
+            $Description = "No Description found. Please Update the Description manually!"
+        }
+        elseif ($Description.Count -gt 1){ 
+            ForEach($File in $Description){
+                $Text = Get-Content -Path $File.FullName -Encoding UTF8 -Raw
+                $Descr += $Text + "`r`n`r`n`r`n"
 
-        $Description = $(get-childitem $SourceDir -Filter "Description*" | get-content -Encoding UTF8 |Out-String)
-        
+            }
+            $DescriptionText = $Descr.TrimEnd("`r`n`r`n")
+        }
+        else {
+            $DescriptionText = Get-Content -Path $File.FullName -Encoding UTF8 -Raw
+        }
+
         If(($installCmdString -match "msiexec").Count -gt 0){
             $MSIName = (get-childitem $SourceDir -Filter "*.msi")[0].FullName
             $MSIProductCode = (Get-AppLockerFileInformation $MSIName |Select-Object -ExpandProperty Publisher).BinaryName
@@ -356,7 +374,7 @@ function New-IntuneWin32App {
             "@odata.type" = "microsoft.graph.win32LobApp"
             displayName = $displayName
             publisher = $publisher
-            description = $Description
+            description = $DescriptionText
             notes = $notes
             owner = $owner
             installCommandLine = $installCmd
@@ -382,7 +400,7 @@ function New-IntuneWin32App {
                 @{"returnCode" = 3010;"type" = "softReboot"}, `
                 @{"returnCode" = 1641;"type" = "hardReboot"}, `
                 @{"returnCode" = 1618;"type" = "retry"}
-                )
+            )
         }
         $MobileAppID = (New-MgDeviceAppManagementMobileApp -BodyParameter (ConvertTo-Json($params))).Id
         if ($MobileAppID ) {
@@ -391,8 +409,8 @@ function New-IntuneWin32App {
         else {
             Write-Host "Failed to create the App. Please check the parameters and try again." -ForegroundColor Red
             Exit 1
+        }
     }
-
 
     # Prepare File Upload to Azure Blob Storage
     $UploadFile =$IntuneWinData.ExtractedFile
@@ -420,8 +438,7 @@ function New-IntuneWin32App {
             Exit 0
         }
         Write-Host "App already exists. Using existing App." -ForegroundColor Yellow
-       }
-
+    }
 
     # Wait for the AzureStorageUriRequest to be processed
     Write-Host "Uploading file to Azure Blob Storage..." -ForegroundColor Yellow
