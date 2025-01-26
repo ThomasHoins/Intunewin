@@ -31,6 +31,12 @@ It automatically generates an App in Intune, with Icon, Detection Rule and relev
 
 - Windows PowerShell 5.1 or PowerShell 7+
 - Internet connection (for downloading `IntuneWinAppUtil.exe` if not already available)
+- IMPORTANT!
+      - Make sure to update the tenant data inside the function `New-IntuneWin32App` to match your App! 
+      otherwise you will add your package to my test intune or you will get an error.
+         $TenantID = "22c3b957-8768-4139-8b5e-279747e3ecbf"
+         $AppId = "3997b08b-ee9c-4528-9afd-dfccb3ef2535"
+         $AppSecret = "u9D8Q~HX31tRrc-tPwojE02g8OvcP4VqSz5H2a7p"
 
 ## Usage
 
