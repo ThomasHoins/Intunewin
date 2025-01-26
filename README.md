@@ -1,15 +1,31 @@
 # IntuneWin Packaging Tool
 
 This PowerShell script automates the process of packaging a folder into a `.intunewin` file for Microsoft Intune deployments. It uses the `IntuneWinAppUtil.exe` tool, downloading it automatically if necessary, and provides user-friendly error handling and output messages.
+It automatically generates an App in Intune, with Icon, Detection Rule and relevant Metadata.
 
 ## Features
 
 - Automatically downloads `IntuneWinAppUtil.exe` if not found in the script's directory.
+- The required Powershell modules will be downloaded automatically to the CurrentUser scope, when not already installed.
 - Packages the provided folder into a `.intunewin` file with proper naming.
 - Supports drag-and-drop functionality for easy folder selection.
-- Automatically renames the output file if it already exists, appending a timestamp to avoid overwriting.
 - Displays the full path of the generated `.intunewin` file upon success.
-- Closes automatically after 10 seconds or waits for user input if an error occurs.
+- If the parameter `-Upload` is set to `$true` (Default) it generates a Application in Intune.
+- The Install.bat file is used as information source for the Metadata for Intune. Use the REM lines
+  |Install.Bat       | Intune          |
+  |------------------|-----------------|
+  |REM DESCRIPTION   | Name            |
+  |REM MANUFACTURER  | Publischer      |
+  |REM LANGUAGE      | Not used        |
+  |REM FILENAME      | Executable used for detection rule |
+  |REM VERSION       | App Version     |
+  |REM ASSETNUMBER   | Notes           |
+  |REM OWNER         | Owner of the App|
+  
+- If you supply the executable file name for the installed Program and the Program is installed locally, a file detection rule is generated automatically. 
+- If the Package uses MSI, a MSI detection Rule is always generated.
+- The first Jpg/Jpeg or PNG file found in the source folder or subfolder will be used as Application Icon in Intune.
+- If you want a special Icon to be used you will have to use the command line and supply the full file name.
 
 ## Requirements
 
@@ -35,14 +51,14 @@ This PowerShell script automates the process of packaging a folder into a `.intu
 ## Script Output
 
 - The packaged `.intunewin` file is saved in the `Output` directory within the script's folder.
-- If the output file already exists, a timestamp is appended to the filename to avoid overwriting.
 - The script will display the full path of the generated file upon completion.
+- In Intune an  App will be generated. (If Upload is set to $true)
 
 ## Error Handling
 
 - If the `IntuneWinAppUtil.exe` tool is missing, the script will automatically download it.
-- Errors during execution are highlighted, and the script waits for user input before closing.
-
+- Errors during execution are highlighted.
+  
 ## Example Output
 
 ```plaintext
@@ -54,9 +70,6 @@ Packaging with IntuneWinAppUtil.exe...
 File successfully packaged as:
 C:\Path\To\Output\YourFolderName.intunewin
 
-==========================================
-Script completed successfully!
-==========================================
 ```
 
 ## Notes
@@ -77,8 +90,8 @@ This project is licensed under the MIT License. See the LICENSE file for details
 
 ### Author
 
-- **Your Name**  
-- [GitHub Profile](https://github.com/YourUsername)
+- **Thomas Hoins (Datagroup OIT)**  
+- [GitHub Profile](https://github.com/ThomasHoins/Intunewin)
 
 Feel free to contribute to this repository by submitting issues or pull requests!
 
