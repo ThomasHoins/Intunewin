@@ -97,10 +97,104 @@ param (
 If ($PSBoundParameters.ContainsKey('SourceDir')){
     $SourceDir = [string]$MyInvocation.BoundParameters.Values
     $OutputDir = "C:\Intunewin\Output"}
+    $IntunewinDir = "C:\Intunewin"
 If (-Not($OutputDir)){$OutputDir="$(Split-Path ($SourceDir))\Output"}
 
 
 #------------------------ Functions ------------------------
+
+
+
+function Show-MessageBox {
+    param(
+        [string]$MessageText,
+        [string[]]$ComboBoxItems = @(),
+        [string]$Button1Text = "OK",
+        [string]$Button2Text = "Cancel"
+    )
+    Add-Type -AssemblyName PresentationFramework
+    # Create a new WPF Window (more control over layout)
+    $window = New-Object -TypeName System.Windows.Window
+    $window.Title = "Message Box"
+    $window.Width = 300
+    $window.Height = 170
+    $window.ResizeMode = [System.Windows.ResizeMode]::NoResize
+    $window.WindowStartupLocation = [System.Windows.WindowStartupLocation]::CenterScreen
+
+    # Create a Grid to layout the controls
+    $grid = New-Object System.Windows.Controls.Grid
+    $window.Content = $grid
+
+    # Define rows and columns for Grid layout
+    $RowDef1 = New-Object Windows.Controls.RowDefinition
+    $RowDef1.Height = 'Auto'
+    $RowDef2 = New-Object Windows.Controls.RowDefinition
+    $RowDef2.Height = 'Auto'
+    $RowDef3 = New-Object Windows.Controls.RowDefinition
+    $RowDef3.Height = 'Auto'
+    $Grid.RowDefinitions.Add($RowDef1)
+    $Grid.RowDefinitions.Add($RowDef2)
+    $Grid.RowDefinitions.Add($RowDef3)
+    
+    $grid.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition))
+    $grid.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition))
+
+    # Create label for message
+    $label = New-Object System.Windows.Controls.TextBlock
+    $label.Text = $MessageText
+    $label.VerticalAlignment = [System.Windows.VerticalAlignment]::Top
+    $label.Margin = [System.Windows.Thickness]::new(10, 10, 10, 10)
+    $grid.Children.Add($label)
+    [System.Windows.Controls.Grid]::SetRow($label, 0)
+    [System.Windows.Controls.Grid]::SetColumnSpan($label, 2)
+
+    # If ComboBox items are provided, create a ComboBox
+    if ($ComboBoxItems.Length -gt 0) {
+        $comboBox = New-Object System.Windows.Controls.ComboBox
+        $comboBox.ItemsSource = $ComboBoxItems
+        $comboBox.SelectedIndex = 0
+        $comboBox.Margin = [System.Windows.Thickness]::new(10)
+        $grid.Children.Add($comboBox)
+        [System.Windows.Controls.Grid]::SetRow($comboBox, 1)
+        [System.Windows.Controls.Grid]::SetColumnSpan($comboBox, 2)
+    }
+
+    # Create button 1 (customizable text)
+    $button1 = New-Object System.Windows.Controls.Button
+    $button1.Content = $Button1Text
+    $button1.Margin = [System.Windows.Thickness]::new(10)
+    $button1.Add_Click({
+        $window.DialogResult = $true
+        $window.Close()
+    })
+    $grid.Children.Add($button1)
+    [System.Windows.Controls.Grid]::SetRow($button1, 2)
+    [System.Windows.Controls.Grid]::SetColumn($button1, 0)
+
+    # Create button 2 (customizable text)
+    $button2 = New-Object System.Windows.Controls.Button
+    $button2.Content = $Button2Text
+    $button2.Margin = [System.Windows.Thickness]::new(10)
+    $button2.Add_Click({
+        $window.DialogResult = $false
+        $window.Close()
+    })
+    $grid.Children.Add($button2)
+    [System.Windows.Controls.Grid]::SetRow($button2, 2)
+    [System.Windows.Controls.Grid]::SetColumn($button2, 1)
+
+    # Show window as dialog
+    $window.ShowDialog()
+
+    # Return the result and the selected value from ComboBox if applicable
+    if ($window.DialogResult) {
+        return @{ "Result" = $Button1Text; "SelectedValue" = $comboBox.SelectedItem }
+    } else {
+        return @{ "Result" = $Button2Text; "SelectedValue" = $null }
+    }
+}
+
+
 
 function Wait-ForFileProcessing {
     # Wait for the file to be processed we will check the file upload state every 10 seconds
@@ -250,9 +344,7 @@ function New-IntuneWin32App {
     }
     
     Disconnect-MgGraph -ErrorAction SilentlyContinue
-    $TenantID = "22c3b957-8768-4139-8b5e-279747e3ecbf"
-    $AppId = "3997b08b-ee9c-4528-9afd-dfccb3ef2535"
-    $AppSecret = "u9D8Q~HX31tRrc-tPwojE02g8OvcP4VqSz5H2a7p"
+
     # Connect to Microsoft Graph Using the Tenant ID and Client Secret Credential
     Write-Host "Connecting to Microsoft Graph..." -ForegroundColor Yellow
     $SecureClientSecret = ConvertTo-SecureString -String $AppSecret -AsPlainText -Force
@@ -527,8 +619,81 @@ function New-IntuneWin32App {
 
 }
 
-#------------------------ Main Script ------------------------
+#---------------------------Test ---------------------------
+function Connect-Intune{
+    #https://blog.icewolf.ch/archive/2022/12/02/create-azure-ad-app-registration-with-microsoft-graph-powershell
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $false)]
+        [string]$SettingsFile = "$IntunewinDir\Settings.json"
+    )
+    If (Test-Path -Path $SettingsFile){
+        
 
+        Write-Host "Reading Settings file..." -ForegroundColor Yellow
+        Get-Content -Path $SettingsFile | ConvertFrom-Json | ForEach-Object {
+            $TenantID = $_.TenantID
+            $AppID = $_.AppID
+            $AppSecret = $_.AppSecret
+        }
+        Write-Host "Settings file read successfully." -ForegroundColor Green
+        Write-Host "Using App Secret to connect to Tenant: $TenantID" -ForegroundColor Green
+        $SecureClientSecret = ConvertTo-SecureString -String $AppSecret -AsPlainText -Force
+        $ClientSecretCredential = New-Object -TypeName System.Management.Automation.PSCredential -ArgumentList $AppId, $SecureClientSecret
+        Connect-MgGraph -TenantId $TenantID -ClientSecretCredential $ClientSecretCredential -NoWelcome
+    }
+    Else{
+        Write-Host "Settings file not found. Creating a new one..." -ForegroundColor Yellow
+
+        Connect-MgGraph -Scopes "DeviceManagementApps.ReadWrite.All, DeviceManagementServiceConfig.ReadWrite.All,Application.ReadWrite.All"
+
+        $TenantID = (Get-MgContext).TenantId
+
+        #Create a new Application
+        $App = New-MgApplication -DisplayName "Intune App Registration (Custom)"
+        $AppID = $App.AppId
+
+        Update-MgApplication -ApplicationId $AppID-BodyParameter @{RequiredResourceAccess = @({ResourceAppId = "00000003-0000-0000-c000-000000000000"ResourceAccess = @( @{Id = "b340eb25-3456-403f-be2f-af7a0d370277"Type = "Scope"})})}
+
+       <#"DeviceManagementApps.ReadWrite.All, DeviceManagementServiceConfig.ReadWrite.All,Application.ReadWrite.All"
+        #Add the MS Graph API permission for "Application.ReadWrite.All" of type 'Application'
+        Add-AzADAppPermission -ApiId 00000003-0000-0000-c000-000000000000 -PermissionId 1bfefb4e-e0b5-418b-a88f-73c46d2cc8e9 -ApplicationID $AppId -Type Role
+        #Add the MS Graph API permission for "DeviceManagementServiceConfig.ReadWrite" of type 'Application'
+        Add-AzADAppPermission -ApiId 00000003-0000-0000-c000-000000000000 -PermissionId 5ac13192-7ace-4fcf-b828-1a26f28068ee -ApplicationID $AppId -Type Role
+        #Add the MS Graph API permission for "DeviceManagementApps.ReadWrite.All" of type 'Application'
+        Add-AzADAppPermission -ApiId 00000003-0000-0000-c000-000000000000 -PermissionId 78145de6-330d-4800-a6ce-494ff2d33d07 -ApplicationID $AppId -Type Role
+        #>
+        $passwordCred = @{
+            "displayName" = "DemoClientSecret"
+            "endDateTime" = (Get-Date).AddMonths(+12)
+        }
+        $ClientSecret = Add-MgApplicationPassword -ApplicationId  $AppID -PasswordCredential $passwordCred
+        $ClientSecret2
+        $ClientSecret2.SecretText
+        #Show ClientSecrets
+        $App = Get-MgApplication -ApplicationId  $AppID 
+        $App.PasswordCredentials
+
+        Write-Output $ClientSecret
+        $AppSecret = $ClientSecret.SecretText
+        #Hier fehlt noch was
+        #While (!(Get-AzADAppCredential -ApplicationId $App.AppId).KeyId) {
+        #    Start-Sleep 10
+        #} 
+
+        #Update Settings file with gatered information
+        $Settings = @{
+            TenantID = $TenantID
+            AppID = $AppID
+            AppSecret = $AppSecret
+        }
+        Out-File -FilePath $SettingsFile -InputObject ($Settings | ConvertTo-Json)
+    }
+}
+
+#---------------------------Test ---------------------------
+
+#------------------------ Main Script ------------------------
 # Script Header
 Write-Host "==========================================" -ForegroundColor Cyan
 Write-Host "          IntuneWin Packaging Tool         " -ForegroundColor Cyan
