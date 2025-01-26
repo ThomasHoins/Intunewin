@@ -10,13 +10,15 @@ This PowerShell script automates the process of packaging a folder into a `.intu
 - Displays the full path of the generated `.intunewin` file upon success.
 - Generates a Application in Intune
 - The Install.bat file is used as information source for the Metadata for Intune. Use the REM lines
-   - REM DESCRIPTION      Name
-   - REM MANUFACTURER     Publischer
-   - REM LANGUAGE         Not used
-   - REM FILENAME         Executable used for detection rule
-   - REM VERSION         App Version
-   - REM ASSETNUMBER      Notes
-   - REM OWNER         Owner of the App
+  Install.Bat       | Intune
+  ------------------------------------
+  REM DESCRIPTION   | Name
+  REM MANUFACTURER  | Publischer
+  REM LANGUAGE      | Not used
+  REM FILENAME      | Executable used for detection rule
+  REM VERSION       | App Version
+  REM ASSETNUMBER   | Notes
+  REM OWNER         | Owner of the App
 - If you supply the executable file name for the installed Program and the Program is installed, a file detection rule is generated automatically.
 - 
 
