@@ -8,7 +8,7 @@
     If the IntuneWinAppUtil.exe file is not found, it will be automatically downloaded from the official Microsoft repository.
 
 .NOTES
-    Version:        2.1
+    Version:        2.3
     Author:         Thomas Hoins (DATAGROUP OIT)
     Initial Date:   14.01.2025
     Changes:        14.01.2025 Added error handling, clean outputs, and timestamp-based renaming.
@@ -16,6 +16,9 @@
     Changes:        15.01.2025 Added support for command-line arguments, improved error handling.
     Changes:        24.01.2025 Added support for PowerShell 7, added creation of inune app via graph.
     Changes:        24.01.2025 Added support for Icon detection, added support for Version info.
+    Changes:        25.01.2025 Added notes and owner to the App.
+    Changes:        25.01.2025 Added support for MSI detection.
+    Changes:        25.01.2025 Added some Error handling and improved the output. Updated the documentation.
 
     https://learn.microsoft.com/en-us/graph/api/intune-apps-win32lobapp-create?view=graph-rest-1.0&tabs=http
     https://github.com/microsoftgraph/powershell-intune-samples
@@ -34,9 +37,7 @@
     $azCopyUri = "https://aka.ms/downloadazcopy-v10-windows"
 
     Modules:
-    Microsoft.Graph.Authentication 
-    Microsoft.Graph.Devices.CorporateManagement
-    Az.Storage
+    Required Modules Az.Storage, Microsoft.Graph.Devices.CorporateManagement,Microsoft.Graph.Authentication will be installed if not present.
 
 .LINK
     [Your Documentation or GitHub Link Here]
@@ -57,8 +58,8 @@
 .PARAMETER InstallCmd
     Specifies the name of the installation command file. Default is "install.bat".
 
-.PARAMETER UninstallCmd
-    Specifies the name of the uninstallation command file. Default is "uninstall.bat".
+.PARAMETER Upload
+    Specifies whether to upload the generated .intunewin file to Intune. Default is $true.  
 
 .INPUTS
     Accepts a folder path as input, either via command-line arguments or drag-and-drop.
@@ -74,6 +75,7 @@
     PS> .\PackageIntune.ps1 -SourceDir "C:\MyFolder"
 
 #>
+
 param (
     [Parameter(Mandatory = $false)]
     [string]$SourceDir = "C:\Intunewin\Don Ho_Notepad++_8.7.5_MUI",
@@ -82,9 +84,15 @@ param (
     [string]$outputDir="C:\Intunewin\Output",
 
     [Parameter(Mandatory = $false)]
+    [bool]$Upload= $true,  
+    
+    [Parameter(Mandatory = $false)]
+    [bool]$IconName, 
+
+    [Parameter(Mandatory = $false)]
     [string]$InstallCmd="Install.bat"
 )
-If (-Not($OutputDir)){$OutputDir="$PSScriptRoot\Output"}
+If (-Not($OutputDir)){$OutputDir=(Split-Path ($SourceDir)}
 
 #------------------------ Functions ------------------------
 
@@ -222,17 +230,46 @@ function New-IntuneWin32App {
         [Parameter(Mandatory = $false)]
         [string]$IconName
     )
+
+    # Check if the required modules are installed
+    
+    $modules = 'Az.Storage', 'Microsoft.Graph.Devices.CorporateManagement', 'Microsoft.Graph.Authentication'
+    $installed = @((Get-Module $modules -ListAvailable).Name | Select-Object -Unique)
+    $notInstalled = Compare-Object $modules $installed -PassThru
+
+    if ($notInstalled) { # At least one module is missing.
+    # Install the missing modules now.
+    Write-Host "Installing required modules..." -ForegroundColor Yellow
+    Install-Module -Scope CurrentUser $notInstalled -Force -AllowClobber
+    }
+    
+    Disconnect-MgGraph -ErrorAction SilentlyContinue
+    $TenantID = "22c3b957-8768-4139-8b5e-279747e3ecbf"
+    $AppId = "3997b08b-ee9c-4528-9afd-dfccb3ef2535"
+    $AppSecret = "u9D8Q~HX31tRrc-tPwojE02g8OvcP4VqSz5H2a7p"
+    # Connect to Microsoft Graph Using the Tenant ID and Client Secret Credential
+    Write-Host "Connecting to Microsoft Graph..." -ForegroundColor Yellow
+    $SecureClientSecret = ConvertTo-SecureString -String $AppSecret -AsPlainText -Force
+    $ClientSecretCredential = New-Object -TypeName System.Management.Automation.PSCredential -ArgumentList $AppId, $SecureClientSecret
+    Connect-MgGraph -TenantId $TenantID -ClientSecretCredential $ClientSecretCredential -NoWelcome
+
     # If no icon is supplied Search for the Icon
+
     If ([string]::IsNullOrEmpty($IconName)){
+        Write-Host "Searching for Icon..." -ForegroundColor Yellow
         $Iconpath=(Get-childitem -Path $SourceDir -Include *.png,*.jpg,*jpeg -Recurse| Select-Object -First 1).FullName
     }
     If ([string]::IsNullOrEmpty($Iconpath)){
         Write-Host "No Icon found. Please Update the Icon manually!" -ForegroundColor Red
     }
-    If ($Iconpath -like "*.jpg" -or $Iconpath -like "*.jpeg")
-        {$IconType = "image/jpeg"}
-    elseif ($Iconpath -like "*.png")
-        {$IconType = "image/png"}
+    If ($Iconpath -like "*.jpg" -or $Iconpath -like "*.jpeg"){
+        $IconType = "image/jpeg"
+        Write-Host "Icon found: $Iconpath" -ForegroundColor Green
+    }
+    elseif ($Iconpath -like "*.png"){
+        $IconType = "image/png"
+        Write-Host "Icon found: $Iconpath" -ForegroundColor Green
+    }
     else {
         Write-Host "No Icon found. Please Update the Icon manually!" -ForegroundColor Red
         $Iconpath = ""
@@ -246,6 +283,8 @@ function New-IntuneWin32App {
     $publisher = ($installCmdString -match "REM MANUFACTURER").Replace("REM MANUFACTURER","").Trim()
     If ($installCmdString -match "REM FILENAME"){$fileName = ($installCmdString -match "REM FILENAME").Replace("REM FILENAME","").Trim()}
     $version = ($installCmdString -match "REM VERSION").Replace("REM VERSION","").Trim()
+    If ($installCmdString -match "REM OWNER"){$owner = ($installCmdString -match "REM OWNER").Replace("REM OWNER","").Trim()}
+    If ($installCmdString -match "REM ASSETNUMBER"){$notes = ($installCmdString -match "REM ASSETNUMBER").Replace("REM ASSETNUMBER","").Trim()}
     $IntuneWinData = Get-IntuneWinFileAndMetadata -FilePath $AppPath
     $IntuneWinMetadata = $IntuneWinData.DetectionXMLContent
 
@@ -283,32 +322,34 @@ function New-IntuneWin32App {
         }
         Else {
             If($fileName){
+                Write-Host "Searching for File Path..." -ForegroundColor Yellow
                 $filePath = (Get-ChildItem -Path "C:\Program*"  -Recurse -ErrorAction SilentlyContinue -Include $fileName -Depth 3).FullName
-                $Rule=@{
-                    "@odata.type"= "microsoft.graph.win32LobAppFileSystemRule"
-                    "ruleType"= "detection"
-                    "path"= (Split-Path -Path $filePath -Parent)
-                    "fileOrFolderName"= (Split-Path -Path $filePath -Leaf)
-                    "check32BitOn64System"= $true
-                    "operationType"= "version"
-                    "operator"= "greaterThanOrEqual"
-                    "comparisonValue"= $version
-                    }
+                If ($filePath){
+                    $path= (Split-Path -Path $filePath -Parent)
+                    $fileOrFolderName= (Split-Path -Path $filePath -Leaf)
+                }
+                Else{
+                    Write-Host "No file path could be found. Please Update the file Rule manually!" -ForegroundColor Red
+                }
             }
             Else{
-                $filePath =""
                 Write-Host "No file path could be found. Please Update the file Rule manually!" -ForegroundColor Red
             }
             $Rule=@{
                 "@odata.type"= "microsoft.graph.win32LobAppFileSystemRule"
                 "ruleType"= "detection"
-                "path"= ""
-                "fileOrFolderName"= ""
+                "path"= $path
+                "fileOrFolderName"= $fileOrFolderName
                 "check32BitOn64System"= $true
                 "operationType"= "version"
                 "operator"= "greaterThanOrEqual"
                 "comparisonValue"= $version
-                }
+            }
+            If($fileName){
+                Write-Host "----------------------------------------------" -ForegroundColor Green
+                Write-Host "File Rule created: $($Rule |Out-String)" -ForegroundColor Green
+                Write-Host "----------------------------------------------" -ForegroundColor Green
+            }
         }
     
         $params = @{
@@ -316,6 +357,8 @@ function New-IntuneWin32App {
             displayName = $displayName
             publisher = $publisher
             description = $Description
+            notes = $notes
+            owner = $owner
             installCommandLine = $installCmd
             uninstallCommandLine = $uninstallCmd
             applicableArchitectures = "x64"
@@ -342,7 +385,14 @@ function New-IntuneWin32App {
                 )
         }
         $MobileAppID = (New-MgDeviceAppManagementMobileApp -BodyParameter (ConvertTo-Json($params))).Id
+        if ($MobileAppID ) {
+            Write-Host  "App created successfully. App ID: $MobileAppID" -ForegroundColor Green
+         }
+        else {
+            Write-Host "Failed to create the App. Please check the parameters and try again." -ForegroundColor Red
+            Exit 1
     }
+
 
     # Prepare File Upload to Azure Blob Storage
     $UploadFile =$IntuneWinData.ExtractedFile
@@ -379,7 +429,7 @@ function New-IntuneWin32App {
     $file = Wait-ForFileProcessing $fileUri "AzureStorageUriRequest"
        
     # Upload the file to Azure Blob Storage 
-    # Get the SAS Token and Storage Account Name
+    #  Get the SAS Token and Storage Account Name
     [System.Uri]$uriObject = $file.azureStorageUri
     $storageAccountName = $uriObject.DnsSafeHost.Split(".")[0]
     $sasToken = $uriObject.Query.Substring(1)
@@ -387,7 +437,7 @@ function New-IntuneWin32App {
     $container = $uploadPath.Split("/")[0]
     $blobPath = $uploadPath.Substring($container.Length+1,$uploadPath.Length - $container.Length-1)
     $storageContext = New-AzStorageContext -StorageAccountName $storageAccountName -SasToken $sasToken
-    # do the actual file to Azure Blob Storage
+    #  do the actual file to Azure Blob Storage
     $blobUpload = Set-AzStorageBlobContent -File $UploadFile -Container $container -Context $storageContext -Blob $blobPath -Force
     Write-Host "Upload finished! Details: Name $($blobUpload.Name), ContentType $($blobUpload.ContentType), Length $($blobUpload.Length), LastModified $($blobUpload.LastModified)" -ForegroundColor Green
 
@@ -403,6 +453,8 @@ function New-IntuneWin32App {
             fileDigestAlgorithm = $IntuneWinMetadata.ApplicationInfo.EncryptionInfo.fileDigestAlgorithm
         }
     }
+    # Remove the file from the local storage
+    Remove-Item -Path (Split-Path $UploadFile) -Force -Recurse -ErrorAction SilentlyContinue
 
     $commitFileUri = "https://graph.microsoft.com/beta/deviceAppManagement/mobileApps/$MobileAppID/microsoft.graph.win32LobApp/contentVersions/1/files/$ContentFileId/commit"
     try{
@@ -448,6 +500,14 @@ function New-IntuneWin32App {
        Exit 1
    }
 
+    Write-Host ""
+    Write-Host "==========================================" -ForegroundColor Green
+    Write-Host "Intune App generated successfully!" -ForegroundColor Green
+    write-host "App ID: $MobileAppID" -ForegroundColor Green
+    Write-Host "Name: $displayName" -ForegroundColor Green
+    Write-Host "Version: $version" -ForegroundColor Green
+    Write-Host "==========================================" -ForegroundColor Green
+
 }
 
 #------------------------ Main Script ------------------------
@@ -458,8 +518,8 @@ Write-Host "          IntuneWin Packaging Tool         " -ForegroundColor Cyan
 Write-Host "==========================================" -ForegroundColor Cyan
 Write-Host ""
 
-# Define paths
 
+# Define paths
 $intuneWinAppUtil = "$PSScriptRoot\IntuneWinAppUtil.exe"
 
 # URL to download IntuneWinAppUtil.exe
@@ -487,11 +547,10 @@ try {
         }
     }
 
-    
-    # Preserve folder name, including dots, and rename the file
+    # Rename the output file with the source folder name
     $sourceFolderName = Split-Path -Leaf $sourceDir
-    #$renamedFile = "$outputDir\$($sourceFolderName).intunewin"
-    $renamedFile = "$outputDir\Install.intunewin"
+    $renamedFile = "$outputDir\$($sourceFolderName).intunewin"
+
     
     # If the intunewin does not already exist, make it
     if (-not (Test-Path -Path $renamedFile)) {
@@ -504,7 +563,7 @@ try {
         if (-not (Test-Path -Path $generatedFile)) {
             throw "Generated file not found: $generatedFile"
         }
-        #Move-Item -Path $generatedFile -Destination $renamedFile -Force
+        Move-Item -Path $generatedFile -Destination $renamedFile -Force
         Write-Host "File successfully packaged as:" -ForegroundColor Green
         Write-Host $renamedFile -ForegroundColor Green
     }
@@ -527,14 +586,8 @@ Write-Host "==========================================" -ForegroundColor Green
 Write-Host "intunewin generated successfully!" -ForegroundColor Green
 Write-Host "==========================================" -ForegroundColor Green
 
-Disconnect-MgGraph -ErrorAction SilentlyContinue
-$TenantID = "22c3b957-8768-4139-8b5e-279747e3ecbf"
-$AppId = "3997b08b-ee9c-4528-9afd-dfccb3ef2535"
-$AppSecret = "u9D8Q~HX31tRrc-tPwojE02g8OvcP4VqSz5H2a7p"
-# Connect to Microsoft Graph Using the Tenant ID and Client Secret Credential
-$SecureClientSecret = ConvertTo-SecureString -String $AppSecret -AsPlainText -Force
-$ClientSecretCredential = New-Object -TypeName System.Management.Automation.PSCredential -ArgumentList $AppId, $SecureClientSecret
-Connect-MgGraph -TenantId $TenantID -ClientSecretCredential $ClientSecretCredential -NoWelcome
+If ($Upload){
+    New-IntuneWin32App -AppPath $renamedFile -SourceDir $sourceDir -IconName $IconName
+}
 
-New-IntuneWin32App -AppPath $renamedFile -SourceDir $sourceDir
 exit 0
