@@ -8,7 +8,7 @@
     If the IntuneWinAppUtil.exe file is not found, it will be automatically downloaded from the official Microsoft repository.
 
 .NOTES
-    Version:        2.4
+    Version:        2.5
     Author:         Thomas Hoins (DATAGROUP OIT)
     Initial Date:   14.01.2025
     Changes:        14.01.2025 Added error handling, clean outputs, and timestamp-based renaming.
@@ -20,6 +20,8 @@
     Changes:        25.01.2025 Added support for MSI detection.
     Changes:        26.01.2025 Added some Error handling and improved the output. Updated the documentation.
     Changes:        26.01.2025 Some more Bug fixes and improvements.
+    Changes:        28.01.2025 Improved the way to connect to MGGraph, added the automatic creation of an App registration
+
 
     https://learn.microsoft.com/en-us/graph/api/intune-apps-win32lobapp-create?view=graph-rest-1.0&tabs=http
     https://github.com/microsoftgraph/powershell-intune-samples
@@ -33,7 +35,7 @@
     https://stackoverflow.com/questions/69031080/using-only-a-sas-token-to-upload-in-powershell
     https://learn.microsoft.com/en-us/rest/api/storageservices/naming-and-referencing-containers--blobs--and-metadata
     https://learn.microsoft.com/de-de/troubleshoot/mem/intune/app-management/develop-deliver-working-win32-app-via-intune
-
+    https://blog.icewolf.ch/archive/2022/12/02/create-azure-ad-app-registration-with-microsoft-graph-powershell
 
     $azCopyUri = "https://aka.ms/downloadazcopy-v10-windows"
 
@@ -332,24 +334,21 @@ function New-IntuneWin32App {
     )
 
     # Check if the required modules are installed
-    
     $modules = 'Az.Storage', 'Microsoft.Graph.Devices.CorporateManagement', 'Microsoft.Graph.Authentication'
     $installed = @((Get-Module $modules -ListAvailable).Name | Select-Object -Unique)
     $notInstalled = Compare-Object $modules $installed -PassThru
 
-    if ($notInstalled) { # At least one module is missing.
+    # At least one module is missing.
     # Install the missing modules now.
+    if ($notInstalled) { 
     Write-Host "Installing required modules..." -ForegroundColor Yellow
     Install-Module -Scope CurrentUser $notInstalled -Force -AllowClobber
     }
-    
-    Disconnect-MgGraph -ErrorAction SilentlyContinue
 
     # Connect to Microsoft Graph Using the Tenant ID and Client Secret Credential
     Write-Host "Connecting to Microsoft Graph..." -ForegroundColor Yellow
-    $SecureClientSecret = ConvertTo-SecureString -String $AppSecret -AsPlainText -Force
-    $ClientSecretCredential = New-Object -TypeName System.Management.Automation.PSCredential -ArgumentList $AppId, $SecureClientSecret
-    Connect-MgGraph -TenantId $TenantID -ClientSecretCredential $ClientSecretCredential -NoWelcome
+    $null = Disconnect-MgGraph -ErrorAction SilentlyContinue
+    Connect-Intune
 
     # Get the Metadata from the install.bat
     $installCmd = "install.bat"
@@ -619,17 +618,15 @@ function New-IntuneWin32App {
 
 }
 
-#---------------------------Test ---------------------------
 function Connect-Intune{
-    #https://blog.icewolf.ch/archive/2022/12/02/create-azure-ad-app-registration-with-microsoft-graph-powershell
     [CmdletBinding()]
     param (
         [Parameter(Mandatory = $false)]
-        [string]$SettingsFile = "$IntunewinDir\Settings.json"
+        [string]$SettingsFile = "$IntunewinDir\Settings.json",
+        [Parameter(Mandatory = $false)]
+        [string]$AppName = "Intune App Registration (Custom)"
     )
     If (Test-Path -Path $SettingsFile){
-        
-
         Write-Host "Reading Settings file..." -ForegroundColor Yellow
         Get-Content -Path $SettingsFile | ConvertFrom-Json | ForEach-Object {
             $TenantID = $_.TenantID
@@ -645,53 +642,105 @@ function Connect-Intune{
     Else{
         Write-Host "Settings file not found. Creating a new one..." -ForegroundColor Yellow
 
-        Connect-MgGraph -Scopes "DeviceManagementApps.ReadWrite.All, DeviceManagementServiceConfig.ReadWrite.All,Application.ReadWrite.All"
+        Connect-MgGraph -Scopes "DeviceManagementApps.ReadWrite.All, DeviceManagementServiceConfig.ReadWrite.All,Application.ReadWrite.All" -NoWelcome
 
-        $TenantID = (Get-MgContext).TenantId
+        $TenantData =Get-MgContext
+        $TenantID = $TenantData.TenantId
 
         #Create a new Application
-        $App = New-MgApplication -DisplayName "Intune App Registration (Custom)"
-        $AppID = $App.AppId
+        $AppObj = Get-MgApplication -Filter "DisplayName eq '$AppName'"
+        If ($AppObj){
+            $AppID = $AppObj.AppId
+            Write-Host "App already exists. Updating existing App." -ForegroundColor Yellow
+        }
+        Else{
+            Write-Host "Creating a new Application..." -ForegroundColor Yellow 
+            $AppObj = New-MgApplication -DisplayName $AppName
+            $AppID = $AppObj.AppId
+            If($AppID){
+                Write-Host "App created successfully. App ID: $AppID" -ForegroundColor Green
+            }
+            Else{
+                Write-Host "Failed to create the App. Please check the parameters and try again." -ForegroundColor Red
+                Exit 1  
+            }
+        }
 
-        Update-MgApplication -ApplicationId $AppID-BodyParameter @{RequiredResourceAccess = @({ResourceAppId = "00000003-0000-0000-c000-000000000000"ResourceAccess = @( @{Id = "b340eb25-3456-403f-be2f-af7a0d370277"Type = "Scope"})})}
+        $accessBody = @{    
+            value = @(
+                @{
+                resourceAppId = "00000003-0000-0000-c000-000000000000"
+                resourceAccess = @(
+                        @{
+                            id = "7b3f05d5-f68c-4b8d-8c59-a2ecd12f24af"
+                            type = "Scope"
+                        }
+                        @{
+                            id = "e1fe6dd8-ba31-4d61-89e7-88639da4683d"
+                            type = "Scope"
+                        }
+                        @{
+                            id = "78145de6-330d-4800-a6ce-494ff2d33d07"
+                            type = "Role"
+                        }
+                        @{
+                            id = "06a5fe6d-c49d-46a7-b082-56b1b14103c7"
+                            type = "Role"
+                        }
+                        @{
+                            id = "5ac13192-7ace-4fcf-b828-1a26f28068ee"
+                            type = "Role"
+                        }
+                    )
+                }
+            )
+        }
+        $fileUri = "https://graph.microsoft.com/v1.0/applications/$($AppObj.ID)/RequiredResourceAccess"
+        try{
+            $null = Invoke-MgGraphRequest -Method PATCH -Uri $fileUri -Body ($accessBody | ConvertTo-Json -Depth 4) 
+        }
+        catch{
+            Write-Host "Failed to update the Required Resource Access. Status code: $($_.Exception.Message)" -ForegroundColor Red
+            Exit 1
+        }
 
-       <#"DeviceManagementApps.ReadWrite.All, DeviceManagementServiceConfig.ReadWrite.All,Application.ReadWrite.All"
-        #Add the MS Graph API permission for "Application.ReadWrite.All" of type 'Application'
-        Add-AzADAppPermission -ApiId 00000003-0000-0000-c000-000000000000 -PermissionId 1bfefb4e-e0b5-418b-a88f-73c46d2cc8e9 -ApplicationID $AppId -Type Role
-        #Add the MS Graph API permission for "DeviceManagementServiceConfig.ReadWrite" of type 'Application'
-        Add-AzADAppPermission -ApiId 00000003-0000-0000-c000-000000000000 -PermissionId 5ac13192-7ace-4fcf-b828-1a26f28068ee -ApplicationID $AppId -Type Role
-        #Add the MS Graph API permission for "DeviceManagementApps.ReadWrite.All" of type 'Application'
-        Add-AzADAppPermission -ApiId 00000003-0000-0000-c000-000000000000 -PermissionId 78145de6-330d-4800-a6ce-494ff2d33d07 -ApplicationID $AppId -Type Role
-        #>
         $passwordCred = @{
-            "displayName" = "DemoClientSecret"
+            "displayName" = "$($AppName)Secret"
             "endDateTime" = (Get-Date).AddMonths(+12)
         }
-        $ClientSecret = Add-MgApplicationPassword -ApplicationId  $AppID -PasswordCredential $passwordCred
-        $ClientSecret2
-        $ClientSecret2.SecretText
-        #Show ClientSecrets
-        $App = Get-MgApplication -ApplicationId  $AppID 
-        $App.PasswordCredentials
+        $ClientSecret = Add-MgApplicationPassword -ApplicationId  $AppObj.ID -PasswordCredential $passwordCred
 
-        Write-Output $ClientSecret
         $AppSecret = $ClientSecret.SecretText
-        #Hier fehlt noch was
-        #While (!(Get-AzADAppCredential -ApplicationId $App.AppId).KeyId) {
-        #    Start-Sleep 10
-        #} 
+        If($AppSecret){
+            Write-Host "App Secret ($AppSecret) created successfully." -ForegroundColor Green
+        }
+        Else{
+            Write-Host "Failed to create the App Secret. Please check the parameters and try again." -ForegroundColor Red
+            Exit 1
+        }
 
-        #Update Settings file with gatered information
-        $Settings = @{
+        #Update Settings file with gathered information
+        $Settings = [ordered]@{
+            _Comment1 = "Make sure to keep this secret safe. This secret can be used to connect to your tenant!"
+            _Comment2 = "The following permissions are granted with this secret"
+            _Comment3 = "DeviceManagementApps.ReadWrite.All, DeviceManagementServiceConfig.ReadWrite.All,Application.ReadWrite.All"
+            AppName = $AppObj.DisplayName
+            CreatedBy = $TenantData.Account
             TenantID = $TenantID
             AppID = $AppID
             AppSecret = $AppSecret
         }
         Out-File -FilePath $SettingsFile -InputObject ($Settings | ConvertTo-Json)
+
+        Write-Host ""
+        Write-Host "==========================================================" -ForegroundColor Green
+        Write-Host "A new App registration ""$($AppObj.DisplayName)"" has been created, you should open" -ForegroundColor Green
+        Write-Host """https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade/quickStartType~/null/sourceType/Microsoft_AAD_IAM"""  -ForegroundColor Green
+        Write-Host "and grant admin permission!" -ForegroundColor Green
+        Write-Host "==========================================================" -ForegroundColor Green
     }
 }
 
-#---------------------------Test ---------------------------
 
 #------------------------ Main Script ------------------------
 # Script Header
@@ -699,6 +748,10 @@ Write-Host "==========================================" -ForegroundColor Cyan
 Write-Host "          IntuneWin Packaging Tool         " -ForegroundColor Cyan
 Write-Host "==========================================" -ForegroundColor Cyan
 Write-Host ""
+
+Connect-Intune
+
+
 
 
 # Define paths

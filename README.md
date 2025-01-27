@@ -26,17 +26,12 @@ It automatically generates an App in Intune, with Icon, Detection Rule and relev
 - If the Package uses MSI, a MSI detection Rule is always generated.
 - The first Jpg/Jpeg or PNG file found in the source folder or subfolder will be used as Application Icon in Intune.
 - If you want a special Icon to be used you will have to use the command line and supply the full file name.
+- Automatically create an App registration and save the log-in data to a Settings.json.
 
 ## Requirements
 
 - Windows PowerShell 5.1 or PowerShell 7+
 - Internet connection (for downloading `IntuneWinAppUtil.exe` if not already available)
-- IMPORTANT!
-      - Make sure to update the tenant data inside the function `New-IntuneWin32App` to match your App! 
-      otherwise you will add your package to my test intune or you will get an error.
-         $TenantID = "22c3b957-8768-4139-8b5e-279747e3ecbf"
-         $AppId = "3997b08b-ee9c-4528-9afd-dfccb3ef2535"
-         $AppSecret = "u9D8Q~HX31tRrc-tPwojE02g8OvcP4VqSz5H2a7p"
 
 ## Usage
 
