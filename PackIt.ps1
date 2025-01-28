@@ -21,7 +21,8 @@
     Changes:        26.01.2025 Added some Error handling and improved the output. Updated the documentation.
     Changes:        26.01.2025 Some more Bug fixes and improvements.
     Changes:        28.01.2025 Improved the way to connect to MGGraph, added the automatic creation of an App registration
-
+    Changes:        28.01.2025 Improved the Errorhandling
+    
 
     https://learn.microsoft.com/en-us/graph/api/intune-apps-win32lobapp-create?view=graph-rest-1.0&tabs=http
     https://github.com/microsoftgraph/powershell-intune-samples
@@ -37,6 +38,7 @@
     https://learn.microsoft.com/de-de/troubleshoot/mem/intune/app-management/develop-deliver-working-win32-app-via-intune
     https://blog.icewolf.ch/archive/2022/12/02/create-azure-ad-app-registration-with-microsoft-graph-powershell
     https://knowledge-junction.in/2024/05/06/msgraph-create-app-microsoft-entra/
+    https://practical365.com/common-graph-api-errors-powershell/
     $azCopyUri = "https://aka.ms/downloadazcopy-v10-windows"
 
     Modules:
@@ -545,6 +547,20 @@ function Connect-Intune{
         $SecureClientSecret = ConvertTo-SecureString -String $AppSecret -AsPlainText -Force
         $ClientSecretCredential = New-Object -TypeName System.Management.Automation.PSCredential -ArgumentList $AppId, $SecureClientSecret
         Connect-MgGraph -TenantId $TenantID -ClientSecretCredential $ClientSecretCredential -NoWelcome
+        $ErrorActionPreference = "Stop"
+        try {
+            $null = Get-MgApplication 
+         }
+        catch {
+            Write-Host "==========================================" -ForegroundColor Red
+            Write-Host " Make sure to grant admin consent to your " -ForegroundColor Red
+            Write-Host " API permissions in your newly created " -ForegroundColor Red
+            Write-Host " App registration !!! " -ForegroundColor Red
+            Write-Host "==========================================" -ForegroundColor Red
+            Write-Host "https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade/quickStartType~/null/sourceType/Microsoft_AAD_IAM" -ForegroundColor Green
+            Write-Host $Error[0].ErrorDetails
+            Exit 1  
+        }
     }
     Else{
         Write-Host "Settings file not found. Creating a new one..." -ForegroundColor Yellow
@@ -572,16 +588,18 @@ function Connect-Intune{
                 Exit 1  
             }
         }
-        
         # Define Application and Delegation Permission ids and type in a hash
         $AppPermissions = @("DeviceManagementApps.ReadWrite.All","DeviceManagementServiceConfig.ReadWrite.All","Application.ReadWrite.All")
         $DelPermissions = @("DeviceManagementApps.ReadWrite.All","User.Read")
-        foreach($Permission in $AppPermissions){
-            $PermID = (Find-MgGraphPermission $Permission -PermissionType Application).Id
+        $permissions = [ordered]@{}
+        $PermID = ""
+        foreach($APermission in $AppPermissions){
+            $PermID = (Find-MgGraphPermission $APermission -PermissionType Application -ExactMatch).Id
             $permissions.add($PermID,"Role")
         }
-        foreach($Permission in $DelPermissions){
-            $PermID = (Find-MgGraphPermission $Permission -PermissionType Delegated).Id
+        $PermID = ""
+        foreach($DPermission in $DelPermissions){
+            $PermID = (Find-MgGraphPermission $DPermission -PermissionType Delegated -ExactMatch).Id
             $permissions.add($PermID,"Scope")
         }
 
@@ -603,9 +621,7 @@ function Connect-Intune{
             }
         }
 
-        $accessBody | ConvertTo-Json -Depth 4
-
-
+        # Aplly upload the selected permissions via Graph API
         $fileUri = "https://graph.microsoft.com/v1.0/applications/$($AppObj.ID)/RequiredResourceAccess"
         try{
             $null = Invoke-MgGraphRequest -Method PATCH -Uri $fileUri -Body ($accessBody | ConvertTo-Json -Depth 4) 
@@ -644,11 +660,16 @@ function Connect-Intune{
         Out-File -FilePath $SettingsFile -InputObject ($Settings | ConvertTo-Json)
 
         Write-Host ""
-        Write-Host "==========================================================" -ForegroundColor Green
-        Write-Host "A new App registration ""$($AppObj.DisplayName)"" has been created, you should open" -ForegroundColor Green
-        Write-Host """https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade/quickStartType~/null/sourceType/Microsoft_AAD_IAM"""  -ForegroundColor Green
-        Write-Host "and grant admin permission!" -ForegroundColor Green
-        Write-Host "==========================================================" -ForegroundColor Green
+        Write-Host "==========================================================" -ForegroundColor Red
+        Write-Host " A new App Registration ""$($AppObj.DisplayName)"" " -ForegroundColor Green
+        Write-Host " has been created." -ForegroundColor Green
+        Write-Host " Make sure to grant admin consent to your " -ForegroundColor Red
+        Write-Host " API permissions in your newly created " -ForegroundColor Red
+        Write-Host " App registration !!! " -ForegroundColor Red
+        Write-Host  "==========================================================" -ForegroundColor Red
+        Write-Host " Use this URL to grant consent:" -ForegroundColor Green
+        Write-Host "https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade/quickStartType~/null/sourceType/Microsoft_AAD_IAM" -ForegroundColor Green
+        Exit 0
     }
 }
 
