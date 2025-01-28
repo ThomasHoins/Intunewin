@@ -660,11 +660,6 @@ Write-Host "          IntuneWin Packaging Tool         " -ForegroundColor Cyan
 Write-Host "==========================================" -ForegroundColor Cyan
 Write-Host ""
 
-Connect-Intune
-
-
-
-
 # Define paths
 $intuneWinAppUtil = "$PSScriptRoot\IntuneWinAppUtil.exe"
 
@@ -732,6 +727,7 @@ Write-Host "==========================================" -ForegroundColor Green
 Write-Host "intunewin generated successfully!" -ForegroundColor Green
 Write-Host "==========================================" -ForegroundColor Green
 
+# Upload the generated .intunewin file to Intune and generate a application.
 If ($Upload){
     New-IntuneWin32App -AppPath $renamedFile -SourceDir $sourceDir -IconName $IconName
 }
