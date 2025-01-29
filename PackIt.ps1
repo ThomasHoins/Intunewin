@@ -107,6 +107,99 @@ If (-Not($OutputDir)){$OutputDir="$(Split-Path ($SourceDir))\Output"}
 
 #------------------------ Functions ------------------------
 
+
+
+function Show-MessageBox {
+    param(
+        [string]$MessageText,
+        [string[]]$ComboBoxItems = @(),
+        [string]$Button1Text = "OK",
+        [string]$Button2Text = "Cancel"
+    )
+    Add-Type -AssemblyName PresentationFramework
+    # Create a new WPF Window (more control over layout)
+    $window = New-Object -TypeName System.Windows.Window
+    $window.Title = "Message Box"
+    $window.Width = 300
+    $window.Height = 170
+    $window.ResizeMode = [System.Windows.ResizeMode]::NoResize
+    $window.WindowStartupLocation = [System.Windows.WindowStartupLocation]::CenterScreen
+
+    # Create a Grid to layout the controls
+    $grid = New-Object System.Windows.Controls.Grid
+    $window.Content = $grid
+
+    # Define rows and columns for Grid layout
+    $RowDef1 = New-Object Windows.Controls.RowDefinition
+    $RowDef1.Height = 'Auto'
+    $RowDef2 = New-Object Windows.Controls.RowDefinition
+    $RowDef2.Height = 'Auto'
+    $RowDef3 = New-Object Windows.Controls.RowDefinition
+    $RowDef3.Height = 'Auto'
+    $Grid.RowDefinitions.Add($RowDef1)
+    $Grid.RowDefinitions.Add($RowDef2)
+    $Grid.RowDefinitions.Add($RowDef3)
+    
+    $grid.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition))
+    $grid.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition))
+
+    # Create label for message
+    $label = New-Object System.Windows.Controls.TextBlock
+    $label.Text = $MessageText
+    $label.VerticalAlignment = [System.Windows.VerticalAlignment]::Top
+    $label.Margin = [System.Windows.Thickness]::new(10, 10, 10, 10)
+    $grid.Children.Add($label)
+    [System.Windows.Controls.Grid]::SetRow($label, 0)
+    [System.Windows.Controls.Grid]::SetColumnSpan($label, 2)
+
+    # If ComboBox items are provided, create a ComboBox
+    if ($ComboBoxItems.Length -gt 0) {
+        $comboBox = New-Object System.Windows.Controls.ComboBox
+        $comboBox.ItemsSource = $ComboBoxItems
+        $comboBox.SelectedIndex = 0
+        $comboBox.Margin = [System.Windows.Thickness]::new(10)
+        $grid.Children.Add($comboBox)
+        [System.Windows.Controls.Grid]::SetRow($comboBox, 1)
+        [System.Windows.Controls.Grid]::SetColumnSpan($comboBox, 2)
+    }
+
+    # Create button 1 (customizable text)
+    $button1 = New-Object System.Windows.Controls.Button
+    $button1.Content = $Button1Text
+    $button1.Margin = [System.Windows.Thickness]::new(10)
+    $button1.Add_Click({
+        $window.DialogResult = $true
+        $window.Close()
+    })
+    $grid.Children.Add($button1)
+    [System.Windows.Controls.Grid]::SetRow($button1, 2)
+    [System.Windows.Controls.Grid]::SetColumn($button1, 0)
+
+    # Create button 2 (customizable text)
+    $button2 = New-Object System.Windows.Controls.Button
+    $button2.Content = $Button2Text
+    $button2.Margin = [System.Windows.Thickness]::new(10)
+    $button2.Add_Click({
+        $window.DialogResult = $false
+        $window.Close()
+    })
+    $grid.Children.Add($button2)
+    [System.Windows.Controls.Grid]::SetRow($button2, 2)
+    [System.Windows.Controls.Grid]::SetColumn($button2, 1)
+
+    # Show window as dialog
+    $window.ShowDialog()
+
+    # Return the result and the selected value from ComboBox if applicable
+    if ($window.DialogResult) {
+        return @{ "Result" = $Button1Text; "SelectedValue" = $comboBox.SelectedItem }
+    } else {
+        return @{ "Result" = $Button2Text; "SelectedValue" = $null }
+    }
+}
+
+
+
 function Wait-ForFileProcessing {
     # Wait for the file to be processed we will check the file upload state every 10 seconds
     [cmdletbinding()]
