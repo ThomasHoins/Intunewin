@@ -22,6 +22,7 @@
     Changes:        26.01.2025 Some more Bug fixes and improvements.
     Changes:        28.01.2025 Improved the way to connect to MGGraph, added the automatic creation of an App registration
     Changes:        28.01.2025 Improved the Errorhandling
+    Changes:        07.02.2025 Changed Permissions to minimal
     
 
     https://learn.microsoft.com/en-us/graph/api/intune-apps-win32lobapp-create?view=graph-rest-1.0&tabs=http
@@ -626,7 +627,7 @@ function Connect-Intune{
         [Parameter(Mandatory = $false)]
         [string]$SettingsFile = "$IntunewinDir\Settings.json",
         [Parameter(Mandatory = $false)]
-        [string]$AppName = "Intune App Registration (Custom)"
+        [string]$AppName = "appreg-inune-CreateIntuneApp-Script-ReadWrite"
     )
     If (Test-Path -Path $SettingsFile){
         Write-Host "Reading Settings file..." -ForegroundColor Yellow
@@ -658,7 +659,7 @@ function Connect-Intune{
     Else{
         Write-Host "Settings file not found. Creating a new one..." -ForegroundColor Yellow
 
-        Connect-MgGraph -Scopes "DeviceManagementApps.ReadWrite.All, DeviceManagementServiceConfig.ReadWrite.All,Application.ReadWrite.All" -NoWelcome
+        Connect-MgGraph -Scopes "Application.ReadWrite.OwnedBy" -NoWelcome
 
         $TenantData =Get-MgContext
         $TenantID = $TenantData.TenantId
@@ -682,8 +683,8 @@ function Connect-Intune{
             }
         }
         # Define Application and Delegation Permission ids and type in a hash
-        $AppPermissions = @("DeviceManagementApps.ReadWrite.All","DeviceManagementServiceConfig.ReadWrite.All","Application.ReadWrite.All")
-        $DelPermissions = @("DeviceManagementApps.ReadWrite.All","User.Read")
+        $AppPermissions = @("DeviceManagementApps.ReadWrite.All")
+        $DelPermissions = $null # @("DeviceManagementApps.ReadWrite.All","User.Read")
         $permissions = [ordered]@{}
         $PermID = ""
         foreach($APermission in $AppPermissions){
