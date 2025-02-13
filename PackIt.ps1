@@ -8,7 +8,7 @@
     If the IntuneWinAppUtil.exe file is not found, it will be automatically downloaded from the official Microsoft repository.
 
 .NOTES
-    Version:        2.5
+    Version:        2.5.1
     Author:         Thomas Hoins (DATAGROUP OIT)
     Initial Date:   14.01.2025
     Changes:        14.01.2025 Added error handling, clean outputs, and timestamp-based renaming.
@@ -23,6 +23,8 @@
     Changes:        28.01.2025 Improved the way to connect to MGGraph, added the automatic creation of an App registration
     Changes:        28.01.2025 Improved the Errorhandling
     Changes:        07.02.2025 Changed Permissions to minimal
+    Changes:        13.02.2025 Changed the Connect-Intune function to make it more resilient, removed unused code
+
     
 
     https://learn.microsoft.com/en-us/graph/api/intune-apps-win32lobapp-create?view=graph-rest-1.0&tabs=http
@@ -107,99 +109,6 @@ If (-Not($OutputDir)){$OutputDir="$(Split-Path ($SourceDir))\Output"}
 
 
 #------------------------ Functions ------------------------
-
-
-
-function Show-MessageBox {
-    param(
-        [string]$MessageText,
-        [string[]]$ComboBoxItems = @(),
-        [string]$Button1Text = "OK",
-        [string]$Button2Text = "Cancel"
-    )
-    Add-Type -AssemblyName PresentationFramework
-    # Create a new WPF Window (more control over layout)
-    $window = New-Object -TypeName System.Windows.Window
-    $window.Title = "Message Box"
-    $window.Width = 300
-    $window.Height = 170
-    $window.ResizeMode = [System.Windows.ResizeMode]::NoResize
-    $window.WindowStartupLocation = [System.Windows.WindowStartupLocation]::CenterScreen
-
-    # Create a Grid to layout the controls
-    $grid = New-Object System.Windows.Controls.Grid
-    $window.Content = $grid
-
-    # Define rows and columns for Grid layout
-    $RowDef1 = New-Object Windows.Controls.RowDefinition
-    $RowDef1.Height = 'Auto'
-    $RowDef2 = New-Object Windows.Controls.RowDefinition
-    $RowDef2.Height = 'Auto'
-    $RowDef3 = New-Object Windows.Controls.RowDefinition
-    $RowDef3.Height = 'Auto'
-    $Grid.RowDefinitions.Add($RowDef1)
-    $Grid.RowDefinitions.Add($RowDef2)
-    $Grid.RowDefinitions.Add($RowDef3)
-    
-    $grid.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition))
-    $grid.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition))
-
-    # Create label for message
-    $label = New-Object System.Windows.Controls.TextBlock
-    $label.Text = $MessageText
-    $label.VerticalAlignment = [System.Windows.VerticalAlignment]::Top
-    $label.Margin = [System.Windows.Thickness]::new(10, 10, 10, 10)
-    $grid.Children.Add($label)
-    [System.Windows.Controls.Grid]::SetRow($label, 0)
-    [System.Windows.Controls.Grid]::SetColumnSpan($label, 2)
-
-    # If ComboBox items are provided, create a ComboBox
-    if ($ComboBoxItems.Length -gt 0) {
-        $comboBox = New-Object System.Windows.Controls.ComboBox
-        $comboBox.ItemsSource = $ComboBoxItems
-        $comboBox.SelectedIndex = 0
-        $comboBox.Margin = [System.Windows.Thickness]::new(10)
-        $grid.Children.Add($comboBox)
-        [System.Windows.Controls.Grid]::SetRow($comboBox, 1)
-        [System.Windows.Controls.Grid]::SetColumnSpan($comboBox, 2)
-    }
-
-    # Create button 1 (customizable text)
-    $button1 = New-Object System.Windows.Controls.Button
-    $button1.Content = $Button1Text
-    $button1.Margin = [System.Windows.Thickness]::new(10)
-    $button1.Add_Click({
-        $window.DialogResult = $true
-        $window.Close()
-    })
-    $grid.Children.Add($button1)
-    [System.Windows.Controls.Grid]::SetRow($button1, 2)
-    [System.Windows.Controls.Grid]::SetColumn($button1, 0)
-
-    # Create button 2 (customizable text)
-    $button2 = New-Object System.Windows.Controls.Button
-    $button2.Content = $Button2Text
-    $button2.Margin = [System.Windows.Thickness]::new(10)
-    $button2.Add_Click({
-        $window.DialogResult = $false
-        $window.Close()
-    })
-    $grid.Children.Add($button2)
-    [System.Windows.Controls.Grid]::SetRow($button2, 2)
-    [System.Windows.Controls.Grid]::SetColumn($button2, 1)
-
-    # Show window as dialog
-    $window.ShowDialog()
-
-    # Return the result and the selected value from ComboBox if applicable
-    if ($window.DialogResult) {
-        return @{ "Result" = $Button1Text; "SelectedValue" = $comboBox.SelectedItem }
-    } else {
-        return @{ "Result" = $Button2Text; "SelectedValue" = $null }
-    }
-}
-
-
 
 function Wait-ForFileProcessing {
     # Wait for the file to be processed we will check the file upload state every 10 seconds
@@ -351,8 +260,8 @@ function New-IntuneWin32App {
     # Connect to Microsoft Graph Using the Tenant ID and Client Secret Credential
     Write-Host "Connecting to Microsoft Graph..." -ForegroundColor Yellow
     $null = Disconnect-MgGraph -ErrorAction SilentlyContinue
-    Connect-Intune
-
+    Connect-Intune -SecretFile "$IntunewinDir\appreg-inune-CreateIntuneApp-Script-ReadWrite.json" -AppName "appreg-inune-CreateIntuneApp-Script-ReadWrite" -ApplicationPermissions "DeviceManagementApps.ReadWrite.All" -Scopes "Application.ReadWrite.All"
+    
     # Get the Metadata from the install.bat
     $installCmd = "install.bat"
     $uninstallCmd = "uninstall.bat"
@@ -625,146 +534,184 @@ function Connect-Intune{
     [CmdletBinding()]
     param (
         [Parameter(Mandatory = $false)]
-        [string]$SettingsFile = "$IntunewinDir\Settings.json",
+        [string]$SecretFile = "$env:Temp\Settings.json",
+		[Parameter(Mandatory = $false)]
+        [string]$Scopes = "Application.ReadWrite.OwnedBy",
         [Parameter(Mandatory = $false)]
-        [string]$AppName = "appreg-inune-CreateIntuneApp-Script-ReadWrite"
+        [string]$AppName = "appreg-inune-BootMediaBuilder-Script-ReadWrite",
+		[Parameter(Mandatory = $false)]
+		[string[]]$ApplicationPermissions = "DeviceManagementServiceConfig.ReadWrite.All, Organization.Read.All",
+		[Parameter(Mandatory = $false)]
+		[string[]]$DelegationPermissions = ""
+
     )
-    If (Test-Path -Path $SettingsFile){
-        Write-Host "Reading Settings file..." -ForegroundColor Yellow
-        Get-Content -Path $SettingsFile | ConvertFrom-Json | ForEach-Object {
-            $TenantID = $_.TenantID
-            $AppID = $_.AppID
-            $AppSecret = $_.AppSecret
-        }
-        Write-Host "Settings file read successfully." -ForegroundColor Green
-        Write-Host "Using App Secret to connect to Tenant: $TenantID" -ForegroundColor Green
-        $SecureClientSecret = ConvertTo-SecureString -String $AppSecret -AsPlainText -Force
-        $ClientSecretCredential = New-Object -TypeName System.Management.Automation.PSCredential -ArgumentList $AppId, $SecureClientSecret
-        Connect-MgGraph -TenantId $TenantID -ClientSecretCredential $ClientSecretCredential -NoWelcome
-        $ErrorActionPreference = "Stop"
-        try {
-            $null = Get-MgApplication 
-         }
-        catch {
-            Write-Host "==========================================" -ForegroundColor Red
-            Write-Host " Make sure to grant admin consent to your " -ForegroundColor Red
-            Write-Host " API permissions in your newly created " -ForegroundColor Red
-            Write-Host " App registration !!! " -ForegroundColor Red
-            Write-Host "==========================================" -ForegroundColor Red
-            Write-Host "https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade/quickStartType~/null/sourceType/Microsoft_AAD_IAM" -ForegroundColor Green
-            Write-Host $Error[0].ErrorDetails
-            Exit 1  
-        }
-    }
-    Else{
-        Write-Host "Settings file not found. Creating a new one..." -ForegroundColor Yellow
+    If (Test-Path -Path $SecretFile){
+		Write-Host "Reading Settings file..." -ForegroundColor Yellow
+		$SecretSettings = Get-Content -Path $SecretFile | ConvertFrom-Json
+		$TenantID = $SecretSettings.TenantID
+		$AppID = $SecretSettings.AppID
+		$AppSecret = $SecretSettings.AppSecret
+		Write-Host "Settings file read successfully." -ForegroundColor Green
+		Write-Host "Using App Secret to connect to Tenant: $TenantID" -ForegroundColor Green
+		$SecureClientSecret = ConvertTo-SecureString -String $AppSecret -AsPlainText -Force
+		$ClientSecretCredential = New-Object -TypeName System.Management.Automation.PSCredential -ArgumentList $AppId, $SecureClientSecret
+		$null = Connect-MgGraph -TenantId $TenantID -ClientSecretCredential $ClientSecretCredential -NoWelcome
 
-        Connect-MgGraph -Scopes "Application.ReadWrite.OwnedBy" -NoWelcome
+    	#Test if Permissions are correct
+		$actscopes = (Get-MgContext | Select-Object -ExpandProperty Scopes).Split(" ")
+		$IncorrectScopes = ""
+		$AppPerms = $ApplicationPermissions.Split(",").Trim()
+		foreach ($AppPerm in $AppPerms) {
+			if ($actscopes -notcontains $AppPerm) {
+				$IncorrectScopes += $AppPerm -join ","
+			}
+		}
+		if ($IncorrectScopes) {
+			Write-Host "==========================================" -ForegroundColor Red
+			Write-Host " The following permissions are missing:" -ForegroundColor Red
+			Write-Host " $IncorrectScopes" -ForegroundColor Green
+			Write-Host " Make sure to grant admin consent to your " -ForegroundColor Red
+			Write-Host " API permissions in your newly created " -ForegroundColor Red
+			Write-Host " App registration !!! " -ForegroundColor Red
+			Write-Host "==========================================" -ForegroundColor Red
+			Write-Host "https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade/quickStartType~/null/sourceType/Microsoft_AAD_IAM" -ForegroundColor Green
+			Write-Host $Error[0].ErrorDetails
+			Exit 1 
+		}
+		else{
+			Write-Host "MS-Graph scopes: $($actscopes -join ", ") are correct" -ForegroundColor Green
+		}
 
-        $TenantData =Get-MgContext
-        $TenantID = $TenantData.TenantId
+		$ErrorActionPreference = "Stop"
+		try {
+			$null = Get-MgDeviceAppManagement
+		}
+		catch {
+			Write-Host "==========================================" -ForegroundColor Red
+			Write-Host " Make sure to grant admin consent to your " -ForegroundColor Red
+			Write-Host " API permissions in your newly created " -ForegroundColor Red
+			Write-Host " App registration !!! " -ForegroundColor Red
+			Write-Host "==========================================" -ForegroundColor Red
+			Write-Host "https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade/quickStartType~/null/sourceType/Microsoft_AAD_IAM" -ForegroundColor Green
+			Write-Host $Error[0].ErrorDetails
+			Exit 1  
+		}
+	}
+	Else{
+		Write-Host "Settings file not found. Creating a new one..." -ForegroundColor Yellow
 
-        #Create a new Application
-        $AppObj = Get-MgApplication -Filter "DisplayName eq '$AppName'"
-        If ($AppObj){
-            $AppID = $AppObj.AppId
-            Write-Host "App already exists. Updating existing App." -ForegroundColor Yellow
-        }
-        Else{
-            Write-Host "Creating a new Application..." -ForegroundColor Yellow 
-            $AppObj = New-MgApplication -DisplayName $AppName
-            $AppID = $AppObj.AppId
-            If($AppID){
-                Write-Host "App created successfully. App ID: $AppID" -ForegroundColor Green
-            }
-            Else{
-                Write-Host "Failed to create the App. Please check the parameters and try again." -ForegroundColor Red
-                Exit 1  
-            }
-        }
-        # Define Application and Delegation Permission ids and type in a hash
-        $AppPermissions = @("DeviceManagementApps.ReadWrite.All")
-        $DelPermissions = $null # @("DeviceManagementApps.ReadWrite.All","User.Read")
-        $permissions = [ordered]@{}
-        $PermID = ""
-        foreach($APermission in $AppPermissions){
-            $PermID = (Find-MgGraphPermission $APermission -PermissionType Application -ExactMatch).Id
-            $permissions.add($PermID,"Role")
-        }
-        $PermID = ""
-        foreach($DPermission in $DelPermissions){
-            $PermID = (Find-MgGraphPermission $DPermission -PermissionType Delegated -ExactMatch).Id
-            $permissions.add($PermID,"Scope")
-        }
+		Connect-MgGraph -Scopes $Scopes -NoWelcome
 
-        # Build the accessBody for the hash
-        $accessBody = [ordered]@{
-            value = @(
-                @{
-                    resourceAppId  = "00000003-0000-0000-c000-000000000000"
-                    resourceAccess = @()
-                }
-            )
-        }
+		$TenantData =Get-MgContext
+		$TenantID = $TenantData.TenantId
 
-        # Add the  id/type pairs to the resourceAccess array
-        foreach ($id in $permissions.Keys) {
-            $accessBody.value[0].resourceAccess += @{
-                id   = $id
-                type = $permissions[$id]
-            }
-        }
+		#Create a new Application
+		$AppObj = Get-MgApplication -Filter "DisplayName eq '$AppName'"
+		If ($AppObj){
+			$AppID = $AppObj.AppId
+			Write-Host "App already exists. Updating existing App." -ForegroundColor Yellow
+		}
+		Else{
+			Write-Host "Creating a new Application..." -ForegroundColor Yellow 
+			$AppObj = New-MgApplication -DisplayName $AppName
+			$AppID = $AppObj.AppId
+			If($AppID){
+				Write-Host "App created successfully. App ID: $AppID" -ForegroundColor Green
+			}
+			Else{
+				Write-Host "Failed to create the App. Please check the parameters and try again." -ForegroundColor Red
+				Exit 1  
+			}
+		}
+		# Define Application and Delegation Permission ids and type in a hash
+		$permissions = [ordered]@{}
+		If ($ApplicationPermissions){
+			$AppPermissions = $ApplicationPermissions.Split(",").Trim()
+			$PermID = ""
+			foreach($APermission in $AppPermissions){
+				$PermID = (Find-MgGraphPermission $APermission -PermissionType Application -ExactMatch).Id
+				$permissions.add($PermID,"Role")
+			}
+		}
 
-        # Aplly upload the selected permissions via Graph API
-        $fileUri = "https://graph.microsoft.com/v1.0/applications/$($AppObj.ID)/RequiredResourceAccess"
-        try{
-            $null = Invoke-MgGraphRequest -Method PATCH -Uri $fileUri -Body ($accessBody | ConvertTo-Json -Depth 4) 
-        }
-        catch{
-            Write-Host "Failed to update the Required Resource Access. Status code: $($_.Exception.Message)" -ForegroundColor Red
-            Exit 1
-        }
+		If ($DelegationPermissions){
+			$DelPermissions = $DelegationPermissions.Split(",").Trim()
+			$PermID = ""
+			foreach($DPermission in $DelPermissions){
+				$PermID = (Find-MgGraphPermission $DPermission -PermissionType Delegated -ExactMatch).Id
+				$permissions.add($PermID,"Scope")
+			}
+		}
 
-        $passwordCred = @{
-            "displayName" = "$($AppName)Secret"
-            "endDateTime" = (Get-Date).AddMonths(+12)
-        }
-        $ClientSecret = Add-MgApplicationPassword -ApplicationId  $AppObj.ID -PasswordCredential $passwordCred
+		# Build the accessBody for the hash
+		$accessBody = [ordered]@{
+			value = @(
+				@{
+					resourceAppId  = "00000003-0000-0000-c000-000000000000"
+					resourceAccess = @()
+				}
+			)
+		}
 
-        $AppSecret = $ClientSecret.SecretText
-        If($AppSecret){
-            Write-Host "App Secret ($AppSecret) created successfully." -ForegroundColor Green
-        }
-        Else{
-            Write-Host "Failed to create the App Secret. Please check the parameters and try again." -ForegroundColor Red
-            Exit 1
-        }
+		# Add the  id/type pairs to the resourceAccess array
+		foreach ($id in $permissions.Keys) {
+			$accessBody.value[0].resourceAccess += @{
+				id   = $id
+				type = $permissions[$id]
+			}
+		}
 
-        #Update Settings file with gathered information
-        $Settings = [ordered]@{
-            _Comment1 = "Make sure to keep this secret safe. This secret can be used to connect to your tenant!"
-            _Comment2 = "The following permissions are granted with this secret"
-            _Comment3 = "DeviceManagementApps.ReadWrite.All, DeviceManagementServiceConfig.ReadWrite.All,Application.ReadWrite.All"
-            AppName = $AppObj.DisplayName
-            CreatedBy = $TenantData.Account
-            TenantID = $TenantID
-            AppID = $AppID
-            AppSecret = $AppSecret
-        }
-        Out-File -FilePath $SettingsFile -InputObject ($Settings | ConvertTo-Json)
+		# Aplly upload the selected permissions via Graph API
+		$fileUri = "https://graph.microsoft.com/v1.0/applications/$($AppObj.ID)/RequiredResourceAccess"
+		try{
+			$null = Invoke-MgGraphRequest -Method PATCH -Uri $fileUri -Body ($accessBody | ConvertTo-Json -Depth 4) 
+		}
+		catch{
+			Write-Host "Failed to update the Required Resource Access. Status code: $($_.Exception.Message)" -ForegroundColor Red
+			Exit 1
+		}
 
-        Write-Host ""
-        Write-Host "==========================================================" -ForegroundColor Red
-        Write-Host " A new App Registration ""$($AppObj.DisplayName)"" " -ForegroundColor Green
-        Write-Host " has been created." -ForegroundColor Green
-        Write-Host " Make sure to grant admin consent to your " -ForegroundColor Red
-        Write-Host " API permissions in your newly created " -ForegroundColor Red
-        Write-Host " App registration !!! " -ForegroundColor Red
-        Write-Host  "==========================================================" -ForegroundColor Red
-        Write-Host " Use this URL to grant consent:" -ForegroundColor Green
-        Write-Host "https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade/quickStartType~/null/sourceType/Microsoft_AAD_IAM" -ForegroundColor Green
-        Exit 0
-    }
+		$passwordCred = @{
+			"displayName" = "Secret-$($AppName)"
+			"endDateTime" = (Get-Date).AddMonths(+12)
+		}
+		$ClientSecret = Add-MgApplicationPassword -ApplicationId  $AppObj.ID -PasswordCredential $passwordCred
+
+		$AppSecret = $ClientSecret.SecretText
+		If($AppSecret){
+			Write-Host "App Secret ($AppSecret) created successfully." -ForegroundColor Green
+		}
+		Else{
+			Write-Host "Failed to create the App Secret. Please check the parameters and try again." -ForegroundColor Red
+			Exit 1
+		}
+
+		#Update Settings file with gathered information
+		$SecretSettings = [ordered]@{
+			Comment1 = "Make sure to keep this secret safe. This secret can be used to connect to your tenant!"
+			Comment2 = "The following permissions are granted with this secret:"
+			ApplicationPermissions = $ApplicationPermissions
+			DelegationPermissions = $DelegationPermissions
+			AppName = $AppObj.DisplayName
+			CreatedBy = $TenantData.Account
+			TenantID = $TenantID
+			AppID = $AppID
+			AppSecret = $AppSecret
+		}
+		Out-File -FilePath $SecretFile -InputObject ($SecretSettings | ConvertTo-Json)
+
+		Write-Host ""
+		Write-Host "==========================================================" -ForegroundColor Red
+		Write-Host " A new App Registration ""$($AppObj.DisplayName)"" " -ForegroundColor Green
+		Write-Host " has been created." -ForegroundColor Green
+		Write-Host " Make sure to grant admin consent to your " -ForegroundColor Red
+		Write-Host " API permissions in your newly created " -ForegroundColor Red
+		Write-Host " App registration !!! " -ForegroundColor Red
+		Write-Host  "==========================================================" -ForegroundColor Red
+		Write-Host " Use this URL to grant consent:" -ForegroundColor Green
+		Write-Host "https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade/quickStartType~/null/sourceType/Microsoft_AAD_IAM" -ForegroundColor Green
+		Exit 0
+	}
 }
 
 
