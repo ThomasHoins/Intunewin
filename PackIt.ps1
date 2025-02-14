@@ -8,7 +8,7 @@
     If the IntuneWinAppUtil.exe file is not found, it will be automatically downloaded from the official Microsoft repository.
 
 .NOTES
-    Version:        2.5.1
+    Version:        2.5.2
     Author:         Thomas Hoins (DATAGROUP OIT)
     Initial Date:   14.01.2025
     Changes:        14.01.2025 Added error handling, clean outputs, and timestamp-based renaming.
@@ -24,6 +24,7 @@
     Changes:        28.01.2025 Improved the Errorhandling
     Changes:        07.02.2025 Changed Permissions to minimal
     Changes:        13.02.2025 Changed the Connect-Intune function to make it more resilient, removed unused code
+    Changes:        14.02.2025 Bug Fixes, we are adding a Dummy File if the intunewin is <9MB
 
     
 
@@ -86,7 +87,7 @@
 
 param (
     [Parameter(Mandatory = $false)]
-    [string]$SourceDir = "C:\Intunewin\Don Ho_Notepad++_8.7.5_MUI",
+    [string]$SourceDir = "C:\Intunewin\Igor_Pavlov_7-Zip_x64_24.09_neu",
 
     [Parameter(Mandatory = $false)]
     [string]$outputDir="C:\Intunewin\Output",
@@ -109,6 +110,22 @@ If (-Not($OutputDir)){$OutputDir="$(Split-Path ($SourceDir))\Output"}
 
 
 #------------------------ Functions ------------------------
+
+function Create-DummyFile{
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$PackagDir,
+
+        [Parameter(Mandatory = $true)]
+        [int]$SizeMB
+
+        )
+    $sizeInBytes = $SizeMB * 1MB
+    $randomData = [byte[]]::new($sizeInBytes)
+    [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($randomData)
+    [System.IO.File]::WriteAllBytes("$PackagDir\dummyfile.txt", $randomData)
+}
 
 function Wait-ForFileProcessing {
     # Wait for the file to be processed we will check the file upload state every 10 seconds
@@ -329,11 +346,11 @@ function New-IntuneWin32App {
             $DescriptionText = $Descr.TrimEnd("`r`n`r`n")
         }
         else {
-            $DescriptionText = Get-Content -Path $File.FullName -Encoding UTF8 -Raw
+            $DescriptionText = Get-Content -Path $Description.FullName -Encoding UTF8 -Raw
         }
 
         If(($installCmdString -match "msiexec").Count -gt 0){
-            $MSIName = (get-childitem $SourceDir -Filter "*.msi")[0].FullName
+            $MSIName = (get-childitem $SourceDir -Filter "*.msi" -Recurse -Depth 1)[0].FullName
             $MSIProductCode = (Get-AppLockerFileInformation $MSIName |Select-Object -ExpandProperty Publisher).BinaryName
             $Rule=@{
                 "@odata.type"= "#microsoft.graph.win32LobAppProductCodeRule"
@@ -581,21 +598,6 @@ function Connect-Intune{
 		else{
 			Write-Host "MS-Graph scopes: $($actscopes -join ", ") are correct" -ForegroundColor Green
 		}
-
-		$ErrorActionPreference = "Stop"
-		try {
-			$null = Get-MgDeviceAppManagement
-		}
-		catch {
-			Write-Host "==========================================" -ForegroundColor Red
-			Write-Host " Make sure to grant admin consent to your " -ForegroundColor Red
-			Write-Host " API permissions in your newly created " -ForegroundColor Red
-			Write-Host " App registration !!! " -ForegroundColor Red
-			Write-Host "==========================================" -ForegroundColor Red
-			Write-Host "https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade/quickStartType~/null/sourceType/Microsoft_AAD_IAM" -ForegroundColor Green
-			Write-Host $Error[0].ErrorDetails
-			Exit 1  
-		}
 	}
 	Else{
 		Write-Host "Settings file not found. Creating a new one..." -ForegroundColor Yellow
@@ -759,6 +761,12 @@ try {
     if (-not (Test-Path -Path $renamedFile)) {
         # Run IntuneWinAppUtil.exe silently
         Write-Host "Packaging with IntuneWinAppUtil.exe..." -ForegroundColor Green
+        $folderSize = (Get-ChildItem -Path $sourceDir -Recurse | Measure-Object -Property Length -Sum).Sum
+        If ($folderSize -lt 9437184) {
+            $sizeMB = [int]((9437184 - $folderSize) / 1048576)
+        Create-DummyFile -PackagDir $sourceDir -SizeMB $sizeMB
+        }
+
         $null = & $intuneWinAppUtil -c $sourceDir -s $installCmd -o $outputDir 
 
         # Move and rename the generated file
