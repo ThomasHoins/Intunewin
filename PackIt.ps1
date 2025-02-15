@@ -88,7 +88,7 @@
 
 param (
     [Parameter(Mandatory = $false)]
-    [string]$SourceDir = "C:\Intunewin\Igor_Pavlov_7-Zip_x64_24.09_neu",
+    [string]$SourceDir = "C:\intunewin\Don Ho_Notepad++_8.7.5_MUI",
 
     [Parameter(Mandatory = $false)]
     [string]$outputDir="C:\Intunewin\Output",
@@ -762,7 +762,7 @@ try {
         New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
     }
     # Check if link exists an create one
-    $LinkPath = "$PSScriptRoot\PackIt"
+    $LinkPath = "$PSScriptRoot\PackIt.lnk"
     if (-not (Test-Path -Path $LinkPath)) {
        $TargetFile = "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
        $Arguments =  "-Executionpolicy Bypass -command ""C:\intunewin\PackIt.ps1"""
