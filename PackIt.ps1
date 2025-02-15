@@ -25,6 +25,7 @@
     Changes:        07.02.2025 Changed Permissions to minimal
     Changes:        13.02.2025 Changed the Connect-Intune function to make it more resilient, removed unused code
     Changes:        14.02.2025 Bug Fixes, we are adding a Dummy File if the intunewin is <9MB
+    Changes:        14.02.2025 Create Shortcut to Drop On
 
     
 
@@ -110,6 +111,26 @@ If (-Not($OutputDir)){$OutputDir="$(Split-Path ($SourceDir))\Output"}
 
 
 #------------------------ Functions ------------------------
+
+Function Create-Shortcut{
+    Param(
+        [string]$TargetFile,
+        [string]$Arguments,
+        [string]$Iconpath,
+        [int]$IconNumber,
+        [string]$ShortcutFile,
+        [string]$Workdir,
+        [int]$Style #1 Normal, 3 Maximized, 7 Minimized
+    )
+    $WScriptShell = New-Object -ComObject WScript.Shell
+    $Shortcut = $WScriptShell.CreateShortcut($ShortcutFile)
+    $Shortcut.TargetPath = $TargetFile
+    If ($Iconpath) {$Shortcut.IconLocation = "$($Iconpath),$IconNumber"}
+    $Shortcut.Arguments = "$Arguments"
+    $Shortcut.WorkingDirectory = $Workdir
+    $Shortcut.WindowStyle = $Style
+    $Shortcut.Save()
+} 
 
 function Create-DummyFile{
     [CmdletBinding()]
@@ -739,6 +760,14 @@ try {
     # Create Output directory silently
     if (-not (Test-Path -Path $outputDir)) {
         New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
+    }
+    # Check if link exists an create one
+    $LinkPath = "$PSScriptRoot\PackIt"
+    if (-not (Test-Path -Path $LinkPath)) {
+       $TargetFile = "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
+       $Arguments =  "-Executionpolicy Bypass -command ""C:\intunewin\PackIt.ps1"""
+       $Iconpath = "C:\Windows\System32\shell32.dll"
+       Create-Shortcut -TargetFile $TargetFile -ShortcutFile $LinkPath -Arguments $Arguments -Iconpath $Iconpath -IconNumber 12 -Workdir $PSScriptRoot -Style 1
     }
 
     # Check if IntuneWinAppUtil.exe exists, download if not
