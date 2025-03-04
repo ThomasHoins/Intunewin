@@ -8,7 +8,7 @@
     If the IntuneWinAppUtil.exe file is not found, it will be automatically downloaded from the official Microsoft repository.
 
 .NOTES
-    Version:        2.6.1
+    Version:        2.6.2
     Author:         Thomas Hoins (DATAGROUP OIT)
     Initial Date:   14.01.2025
     Changes:        14.01.2025 Added error handling, clean outputs, and timestamp-based renaming.
@@ -26,6 +26,7 @@
     Changes:        13.02.2025 Changed the Connect-Intune function to make it more resilient, removed unused code
     Changes:        14.02.2025 Bug Fixes, we are adding a Dummy File if the intunewin is <9MB
     Changes:        14.02.2025 Create Shortcut to Drop On
+    Changes:        04.03.2025 Minor Bug Fix
 
     
 
@@ -88,7 +89,7 @@
 
 param (
     [Parameter(Mandatory = $false)]
-    [string]$SourceDir = "C:\intunewin\Don Ho_Notepad++_8.7.5_MUI",
+    [string]$SourceDir = "\\srvHAMMECM01.ham.all4l.com\PKGSERVER$\Packages\5. Certified\Martin_Prikryl_WinSCP_6.3.7_MUI",
 
     [Parameter(Mandatory = $false)]
     [string]$outputDir="C:\Intunewin\Output",
@@ -284,7 +285,7 @@ function New-IntuneWin32App {
     )
 
     # Check if the required modules are installed
-    $modules = 'Az.Storage', 'Microsoft.Graph.Devices.CorporateManagement', 'Microsoft.Graph.Authentication'
+    $modules = 'Az.Storage', 'Microsoft.Graph.Devices.CorporateManagement', 'Microsoft.Graph.Authentication', 'Microsoft.Graph.Applications'
     $installed = @((Get-Module $modules -ListAvailable).Name | Select-Object -Unique)
     $notInstalled = Compare-Object $modules $installed -PassThru
 
@@ -751,6 +752,15 @@ $intuneWinAppUtil = "$PSScriptRoot\IntuneWinAppUtil.exe"
 # URL to download IntuneWinAppUtil.exe
 $downloadUrl = "https://github.com/microsoft/Microsoft-Win32-Content-Prep-Tool/raw/master/IntuneWinAppUtil.exe"
 
+# Check if link exists an create one
+$LinkPath = "$PSScriptRoot\PackIt.lnk"
+if (-not (Test-Path -Path $LinkPath)) {
+    $TargetFile = "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
+    $Arguments =  "-Executionpolicy Bypass -command ""$PSScriptRoot\PackIt.ps1"""
+    $Iconpath = "C:\Windows\System32\shell32.dll"
+    Create-Shortcut -TargetFile $TargetFile -ShortcutFile $LinkPath -Arguments $Arguments -Iconpath $Iconpath -IconNumber 12 -Workdir $PSScriptRoot -Style 1
+}
+
 try {
     # Get the source directory from the dragged file/folder
     if (-not (Test-Path -Path $sourceDir)) {
@@ -760,14 +770,6 @@ try {
     # Create Output directory silently
     if (-not (Test-Path -Path $outputDir)) {
         New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
-    }
-    # Check if link exists an create one
-    $LinkPath = "$PSScriptRoot\PackIt.lnk"
-    if (-not (Test-Path -Path $LinkPath)) {
-       $TargetFile = "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
-       $Arguments =  "-Executionpolicy Bypass -command ""C:\intunewin\PackIt.ps1"""
-       $Iconpath = "C:\Windows\System32\shell32.dll"
-       Create-Shortcut -TargetFile $TargetFile -ShortcutFile $LinkPath -Arguments $Arguments -Iconpath $Iconpath -IconNumber 12 -Workdir $PSScriptRoot -Style 1
     }
 
     # Check if IntuneWinAppUtil.exe exists, download if not
@@ -795,8 +797,8 @@ try {
             $sizeMB = [int]((9437184 - $folderSize) / 1048576)
         Create-DummyFile -PackagDir $sourceDir -SizeMB $sizeMB
         }
-
-        $null = & $intuneWinAppUtil -c $sourceDir -s $installCmd -o $outputDir 
+        
+        $null = &$intuneWinAppUtil -c $sourceDir -s $installCmd -o $outputDir 
 
         # Move and rename the generated file
         $generatedFile = "$outputDir\Install.intunewin"
