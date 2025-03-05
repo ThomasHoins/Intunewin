@@ -8,7 +8,7 @@
     If the IntuneWinAppUtil.exe file is not found, it will be automatically downloaded from the official Microsoft repository.
 
 .NOTES
-    Version:        2.6.2
+    Version:        2.7.2
     Author:         Thomas Hoins (DATAGROUP OIT)
     Initial Date:   14.01.2025
     Changes:        14.01.2025 Added error handling, clean outputs, and timestamp-based renaming.
@@ -27,6 +27,7 @@
     Changes:        14.02.2025 Bug Fixes, we are adding a Dummy File if the intunewin is <9MB
     Changes:        14.02.2025 Create Shortcut to Drop On
     Changes:        04.03.2025 Minor Bug Fix
+    Changes:        05.03.2025 Added the ability to automatically install the App to find the detection rules
 
     
 
@@ -89,13 +90,16 @@
 
 param (
     [Parameter(Mandatory = $false)]
-    [string]$SourceDir = "\\srvHAMMECM01.ham.all4l.com\PKGSERVER$\Packages\5. Certified\Martin_Prikryl_WinSCP_6.3.7_MUI",
+    [string]$SourceDir = "C:\intunewin\Don Ho_Notepad++_8.7.5_MUI",
 
     [Parameter(Mandatory = $false)]
     [string]$outputDir="C:\Intunewin\Output",
 
     [Parameter(Mandatory = $false)]
     [bool]$Upload= $true,  
+
+    [Parameter(Mandatory = $false)]
+    [bool]$Install= $true,  
     
     [Parameter(Mandatory = $false)]
     [string]$IconName, 
@@ -277,6 +281,9 @@ function New-IntuneWin32App {
         [Parameter(Mandatory = $true)]
         [string]$AppPath,
 
+        [Parameter(Mandatory = $false)]
+        [bool]$Install= $true,
+
         [Parameter(Mandatory = $true)]
         [string]$SourceDir,
 
@@ -292,15 +299,15 @@ function New-IntuneWin32App {
     # At least one module is missing.
     # Install the missing modules now.
     if ($notInstalled) { 
-    Write-Host "Installing required modules..." -ForegroundColor Yellow
-    Install-Module -Scope CurrentUser $notInstalled -Force -AllowClobber
+        Write-Host "Installing required modules..." -ForegroundColor Yellow
+        Install-Module -Scope CurrentUser $notInstalled -Force -AllowClobber
     }
 
     # Connect to Microsoft Graph Using the Tenant ID and Client Secret Credential
     Write-Host "Connecting to Microsoft Graph..." -ForegroundColor Yellow
     $null = Disconnect-MgGraph -ErrorAction SilentlyContinue
     Connect-Intune -SecretFile "$IntunewinDir\appreg-inune-CreateIntuneApp-Script-ReadWrite.json" -AppName "appreg-inune-CreateIntuneApp-Script-ReadWrite" -ApplicationPermissions "DeviceManagementApps.ReadWrite.All" -Scopes "Application.ReadWrite.All"
-    
+
     # Get the Metadata from the install.bat
     $installCmd = "install.bat"
     $uninstallCmd = "uninstall.bat"
@@ -389,7 +396,20 @@ function New-IntuneWin32App {
                     $fileOrFolderName= (Split-Path -Path $filePath -Leaf)
                 }
                 Else{
-                    Write-Host "No file path could be found. Please Update the file Rule manually!" -ForegroundColor Red
+                    Write-Host "No file path could be found.Installing Application..." -ForegroundColor Yellow
+                    If ($Install){
+                        $null = Start-Process -FilePath "$SourceDir\$installCmd" -Wait -passthru -Verb RunAs
+                        $filePath = (Get-ChildItem -Path "C:\Program*"  -Recurse -ErrorAction SilentlyContinue -Include $fileName -Depth 3).FullName
+                        If ($filePath){
+                            $path= (Split-Path -Path $filePath -Parent)
+                            $fileOrFolderName= (Split-Path -Path $filePath -Leaf)
+                        }
+                        Write-Host "Removing Application..." -ForegroundColor Yellow
+                        $null = Start-Process -FilePath "$SourceDir\$uninstallCmd" -Wait -passthru -Verb RunAs
+                        Else{
+                            Write-Host "No file path could be found. Please Update the file Rule manually!" -ForegroundColor Red
+                        }
+                    }
                 }
             }
             Else{
@@ -830,7 +850,7 @@ Write-Host "==========================================" -ForegroundColor Green
 
 # Upload the generated .intunewin file to Intune and generate a application.
 If ($Upload){
-    New-IntuneWin32App -AppPath $renamedFile -SourceDir $sourceDir -IconName $IconName
+    New-IntuneWin32App -AppPath $renamedFile -SourceDir $sourceDir -IconName $IconName -Install $Install
 }
 
 exit 0
