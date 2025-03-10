@@ -27,6 +27,7 @@
     Changes:        14.02.2025 Bug Fixes, we are adding a Dummy File if the intunewin is <9MB
     Changes:        14.02.2025 Create Shortcut to Drop On
     Changes:        04.03.2025 Minor Bug Fix
+    Changes:        10.03.2025 Bug Fix icon and Decriptions ar now found in Subfolders.
 
     
 
@@ -321,7 +322,7 @@ function New-IntuneWin32App {
         # If no icon is supplied Search for the Icon
         If ([string]::IsNullOrEmpty($IconName)){
             Write-Host "Searching for Icon..." -ForegroundColor Yellow
-            $Iconpath=(Get-childitem -Path $SourceDir -Include *.png,*.jpg,*jpeg -Recurse| Select-Object -First 1).FullName
+            $Iconpath=(Get-childitem -Path $SourceDir -Include *.png,*.jpg,*jpeg -Recurse -Depth 1| Select-Object -First 1).FullName
         }
         If ($Iconpath -like "*.jpg" -or $Iconpath -like "*.jpeg"){
             $IconType = "image/jpeg"
@@ -355,7 +356,7 @@ function New-IntuneWin32App {
             $Icon = $null
         }
         $Text= $Descr = ""
-        $Description = $(get-childitem $SourceDir -Filter "Description*")
+        $Description = $(get-childitem $SourceDir -Filter "Description*" -Recurse -Depth 1)
         If (-Not $Description){
             $Description = "No Description found. Please Update the Description manually!"
         }
