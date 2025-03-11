@@ -29,6 +29,7 @@
     Changes:        04.03.2025 Minor Bug Fix
     Changes:        10.03.2025 Bug Fix icon and Decriptions ar now found in Subfolders.
     Changes:        05.03.2025 Added the ability to automatically install the App to find the detection rules
+    Issues: 	Still having issues with the description, it does not upload sometimes. And there is an issue with Special cahracters.
 
     
 
