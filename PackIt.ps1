@@ -91,7 +91,7 @@
 
 param (
     [Parameter(Mandatory = $false)]
-    [string]$SourceDir = "C:\intunewin\Don Ho_Notepad++_8.7.5_MUI",
+    [string]$SourceDir = "\\srvHAMMECM01.ham.all4l.com\PKGSERVER$\Packages\5. Certified\GIT_Windows_2.48.1-64_ENG",
 
     [Parameter(Mandatory = $false)]
     [string]$outputDir="C:\Intunewin\Output",
@@ -567,6 +567,7 @@ function New-IntuneWin32App {
     }
     Write-Host "App successfully committed!" -ForegroundColor Green
 
+    #Fix Version and Description
     $displayversionBody = @{
         "@odata.type" = "#microsoft.graph.win32LobApp"
         displayVersion = $version
