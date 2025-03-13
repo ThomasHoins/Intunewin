@@ -8,7 +8,7 @@
     If the IntuneWinAppUtil.exe file is not found, it will be automatically downloaded from the official Microsoft repository.
 
 .NOTES
-    Version:        2.7.2
+    Version:        2.8.0
     Author:         Thomas Hoins (DATAGROUP OIT)
     Initial Date:   14.01.2025
     Changes:        14.01.2025 Added error handling, clean outputs, and timestamp-based renaming.
@@ -29,7 +29,8 @@
     Changes:        04.03.2025 Minor Bug Fix
     Changes:        10.03.2025 Bug Fix icon and Decriptions ar now found in Subfolders.
     Changes:        05.03.2025 Added the ability to automatically install the App to find the detection rules
-    Issues: 	Still having issues with the description, it does not upload sometimes. And there is an issue with Special cahracters.
+    Changes:        13.03.2025 Changed the way to detect tehe file version, Bug with description fixed, added a wait before closing the window
+    Issues: 	Still having issues with the description, there is an issue with Special cahracters.
 
     
 
@@ -92,7 +93,7 @@
 
 param (
     [Parameter(Mandatory = $false)]
-    [string]$SourceDir = "\\srvHAMMECM01.ham.all4l.com\PKGSERVER$\Packages\5. Certified\GIT_Windows_2.48.1-64_ENG",
+    [string]$SourceDir = "C:\Intunewin\Don Ho_Notepad++_8.7.5_MUI",
 
     [Parameter(Mandatory = $false)]
     [string]$outputDir="C:\Intunewin\Output",
@@ -308,7 +309,7 @@ function New-IntuneWin32App {
     # Connect to Microsoft Graph Using the Tenant ID and Client Secret Credential
     Write-Host "Connecting to Microsoft Graph..." -ForegroundColor Yellow
     $null = Disconnect-MgGraph -ErrorAction SilentlyContinue
-    Connect-Intune -SecretFile "$IntunewinDir\appreg-inune-CreateIntuneApp-Script-ReadWrite.json" -AppName "appreg-inune-CreateIntuneApp-Script-ReadWrite" -ApplicationPermissions "DeviceManagementApps.ReadWrite.All" -Scopes "Application.ReadWrite.All"
+    Connect-Intune -SecretFile "$PSScriptRoot\appreg-intune-CreateIntuneApp-Script-ReadWrite-Prod.json" -AppName "appreg-intune-CreateIntuneApp-Script-ReadWrite" -ApplicationPermissions "DeviceManagementApps.ReadWrite.All" -Scopes "Application.ReadWrite.All"
 
     # Get the Metadata from the install.bat
     $installCmd = "install.bat"
@@ -374,10 +375,10 @@ function New-IntuneWin32App {
                 $Descr += $Text + "`r`n`r`n`r`n"
 
             }
-            $DescriptionText = $Descr.TrimEnd("`r`n`r`n")
+            $DescriptionText = [string]$Descr.TrimEnd("`r`n`r`n")
         }
         else {
-            $DescriptionText = Get-Content -Path $Description.FullName -Encoding UTF8 -Raw
+            $DescriptionText = [string](Get-Content -Path $Description.FullName -Encoding UTF8 -Raw)
         }
 
         If(($installCmdString -match "msiexec").Count -gt 0){
@@ -396,6 +397,10 @@ function New-IntuneWin32App {
                 If ($filePath){
                     $path= (Split-Path -Path $filePath -Parent)
                     $fileOrFolderName= (Split-Path -Path $filePath -Leaf)
+                    $FileVersion = (Get-Item $filePath).VersionInfo.FileVersion
+                    If($FileVersion -ne $version){
+                        Write-Host "File Version ($version) does not match installed Version ($FileVersion), Please fix this manually! " -ForegroundColor Red
+                    }
                 }
                 Else{
                     Write-Host "No file path could be found.Installing Application..." -ForegroundColor Yellow
@@ -405,6 +410,7 @@ function New-IntuneWin32App {
                         If ($filePath){
                             $path= (Split-Path -Path $filePath -Parent)
                             $fileOrFolderName= (Split-Path -Path $filePath -Leaf)
+                            $version = (Get-Item $filePath).VersionInfo.FileVersion
                         }
                         Write-Host "Removing Application..." -ForegroundColor Yellow
                         $null = Start-Process -FilePath "$SourceDir\$uninstallCmd" -Wait -passthru -Verb RunAs
@@ -428,9 +434,9 @@ function New-IntuneWin32App {
                 "comparisonValue"= $version
             }
             If($fileName){
-                Write-Host "----------------------------------------------" -ForegroundColor Green
+                Write-Host "==========================================" -ForegroundColor Green
                 Write-Host "File Rule created: $($Rule |Out-String)" -ForegroundColor Green
-                Write-Host "----------------------------------------------" -ForegroundColor Green
+                Write-Host "==========================================" -ForegroundColor Green
             }
         }
     
@@ -472,6 +478,7 @@ function New-IntuneWin32App {
          }
         else {
             Write-Host "Failed to create the App. Please check the parameters and try again." -ForegroundColor Red
+            Read-Host "Press Enter to close the window"
             Exit 1
         }
     }
@@ -499,6 +506,7 @@ function New-IntuneWin32App {
         $file = Invoke-MgGraphRequest -Method Get -Uri $fileUri
         If($file.value.isCommitted -eq "True"){
             Write-Host "This App is already committed. Please create a new App!" -ForegroundColor Green
+            Read-Host "Press Enter to close the window"
             Exit 0
         }
         Write-Host "App already exists. Using existing App." -ForegroundColor Yellow
@@ -543,6 +551,7 @@ function New-IntuneWin32App {
     }
     catch{
         Write-Host "Failed to commit file to Azure Blob Storage. Status code: $($_.Exception.Message)" -ForegroundColor Red
+        Read-Host "Press Enter to close the window"
         Exit 1
     }
     Write-Host "Waiting for the file to be committed..." -ForegroundColor Yellow
@@ -564,6 +573,7 @@ function New-IntuneWin32App {
     }   
     catch{
         Write-Host "Failed to commit file to App. Status code: $($_.Exception.Message)" -ForegroundColor Red
+        Read-Host "Press Enter to close the window"
         Exit 1
     }
     Write-Host "App successfully committed!" -ForegroundColor Green
@@ -579,6 +589,7 @@ function New-IntuneWin32App {
    }
    Catch{
        Write-Host "Failed to update the display version. Status code: $($_.Exception.Message)" -ForegroundColor Red
+       Read-Host "Press Enter to close the window"
        Exit 1
    }
 
@@ -589,7 +600,6 @@ function New-IntuneWin32App {
     Write-Host "Name: $displayName" -ForegroundColor Green
     Write-Host "Version: $version" -ForegroundColor Green
     Write-Host "==========================================" -ForegroundColor Green
-
 }
 
 function Connect-Intune{
@@ -638,6 +648,7 @@ function Connect-Intune{
 			Write-Host "==========================================" -ForegroundColor Red
 			Write-Host "https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade/quickStartType~/null/sourceType/Microsoft_AAD_IAM" -ForegroundColor Green
 			Write-Host $Error[0].ErrorDetails
+            Read-Host "Press Enter to close the window"
 			Exit 1 
 		}
 		else{
@@ -730,7 +741,8 @@ function Connect-Intune{
 		}
 		Else{
 			Write-Host "Failed to create the App Secret. Please check the parameters and try again." -ForegroundColor Red
-			Exit 1
+			Read-Host "Press Enter to close the window"
+            Exit 1
 		}
 
 		#Update Settings file with gathered information
@@ -757,7 +769,8 @@ function Connect-Intune{
 		Write-Host  "==========================================================" -ForegroundColor Red
 		Write-Host " Use this URL to grant consent:" -ForegroundColor Green
 		Write-Host "https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade/quickStartType~/null/sourceType/Microsoft_AAD_IAM" -ForegroundColor Green
-		Exit 0
+        Read-Host "Press Enter to close the window"		
+        Exit 0
 	}
 }
 
@@ -855,5 +868,5 @@ Write-Host "==========================================" -ForegroundColor Green
 If ($Upload){
     New-IntuneWin32App -AppPath $renamedFile -SourceDir $sourceDir -IconName $IconName -Install $Install
 }
-
+Read-Host "Press Enter to close the window"
 exit 0
