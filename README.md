@@ -77,6 +77,7 @@ C:\Path\To\Output\YourFolderName.intunewin
 
 - Ensure that the `Install.bat` file exists in the source folder, as it is required by `IntuneWinAppUtil.exe`.
 - The script automatically creates an `Output` directory in the same location as the script if it does not already exist.
+- The Template folder is a template to create a package
 
 ## Troubleshooting
 
