@@ -8,7 +8,7 @@
     If the IntuneWinAppUtil.exe file is not found, it will be automatically downloaded from the official Microsoft repository.
 
 .NOTES
-    Version:        2.8.1
+    Version:        2.8.2
     Author:         Thomas Hoins (DATAGROUP OIT)
     Initial Date:   14.01.2025
     Changes:        14.01.2025 Added error handling, clean outputs, and timestamp-based renaming.
@@ -31,6 +31,7 @@
     Changes:        05.03.2025 Added the ability to automatically install the App to find the detection rules
     Changes:        13.03.2025 Changed the way to detect tehe file version, Bug with description fixed, added a wait before closing the window
     Changes:        08.04.2025 Fixed a Bug, We did not consider already existing Versions and special characters in the install bat are fixed now.
+    Changes:        18.09.2025 Added automatic install and uninstall command detection.
     Issues: 	Still having issues with the description, there is an issue with Special cahracters.
 
     
@@ -94,7 +95,7 @@
 
 param (
     [Parameter(Mandatory = $false)]
-    [string]$SourceDir = "C:\intunewin\Google Chrome Enterprise_135.0.7049.42_MUI",
+    [string]$SourceDir = "\\srvHAMMECM01.ham.all4l.com\PKGSERVER$\Packages\5. Certified\Igor_Pavlov_7Zip_25.01_MUI",
 
     [Parameter(Mandatory = $false)]
     [string]$outputDir="C:\Intunewin\Output",
@@ -109,7 +110,7 @@ param (
     [string]$IconName, 
 
     [Parameter(Mandatory = $false)]
-    [string]$InstallCmd="Install.bat"
+    [string]$InstallCmd
 )
 # Fix for dropped on folders with spaces
 If ($PSBoundParameters.ContainsKey('SourceDir')){
@@ -313,8 +314,8 @@ function New-IntuneWin32App {
     Connect-Intune -SecretFile "$PSScriptRoot\appreg-intune-CreateIntuneApp-Script-ReadWrite-Prod.json" -AppName "appreg-intune-CreateIntuneApp-Script-ReadWrite" -ApplicationPermissions "DeviceManagementApps.ReadWrite.All" -Scopes "Application.ReadWrite.All"
 
     # Get the Metadata from the install.bat
-    $installCmd = "install.bat"
-    $uninstallCmd = "uninstall.bat"
+    $installCmd = $script:installCmd 
+    $uninstallCmd = $script:uninstallCmd
     $installCmdString= get-content "$SourceDir\$installCmd" -Encoding UTF8
     $displayName = ($installCmdString -match "REM DESCRIPTION").Replace("REM DESCRIPTION","").Trim()
     $publisher = ($installCmdString -match "REM MANUFACTURER").Replace("REM MANUFACTURER","").Trim()
@@ -809,6 +810,10 @@ try {
     if (-not (Test-Path -Path $sourceDir)) {
         throw "The provided source directory does not exist: $sourceDir, Drag and drop a folder onto the script."
     }
+    
+    #Get the commands for Install and uninstall
+    $InstallCmd = (Get-ChildItem -Path $sourceDir -Recurse -Depth 1 -File -Include "Install*.cmd","Install*.bat").Name
+    $UninstallCmd = (Get-ChildItem -Path $sourceDir -Recurse -Depth 1 -File -Include "Uninstall*.cmd","Uninstall*.bat").Name
 
     # Create Output directory silently
     if (-not (Test-Path -Path $outputDir)) {
