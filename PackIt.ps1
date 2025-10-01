@@ -8,7 +8,7 @@
     If the IntuneWinAppUtil.exe file is not found, it will be automatically downloaded from the official Microsoft repository.
 
 .NOTES
-    Version:        2.5
+    Version:        2.8.3
     Author:         Thomas Hoins (DATAGROUP OIT)
     Initial Date:   14.01.2025
     Changes:        14.01.2025 Added error handling, clean outputs, and timestamp-based renaming.
@@ -21,7 +21,21 @@
     Changes:        26.01.2025 Added some Error handling and improved the output. Updated the documentation.
     Changes:        26.01.2025 Some more Bug fixes and improvements.
     Changes:        28.01.2025 Improved the way to connect to MGGraph, added the automatic creation of an App registration
-    Changes:        28.01.2025 Removed a unused Function
+    Changes:        28.01.2025 Improved the Errorhandling
+    Changes:        07.02.2025 Changed Permissions to minimal
+    Changes:        13.02.2025 Changed the Connect-Intune function to make it more resilient, removed unused code
+    Changes:        14.02.2025 Bug Fixes, we are adding a Dummy File if the intunewin is <9MB
+    Changes:        14.02.2025 Create Shortcut to Drop On
+    Changes:        04.03.2025 Minor Bug Fix
+    Changes:        10.03.2025 Bug Fix icon and Decriptions ar now found in Subfolders.
+    Changes:        05.03.2025 Added the ability to automatically install the App to find the detection rules
+    Changes:        13.03.2025 Changed the way to detect tehe file version, Bug with description fixed, added a wait before closing the window
+    Changes:        08.04.2025 Fixed a Bug, We did not consider already existing Versions and special characters in the install bat are fixed now.
+    Changes:        18.09.2025 Added automatic install and uninstall command detection.
+    Changes:        30.09.2025 Added automatic unlock for Internet files.
+    Issues: 	Still having issues with the description, there is an issue with Special cahracters.
+
+    
 
     https://learn.microsoft.com/en-us/graph/api/intune-apps-win32lobapp-create?view=graph-rest-1.0&tabs=http
     https://github.com/microsoftgraph/powershell-intune-samples
@@ -36,7 +50,8 @@
     https://learn.microsoft.com/en-us/rest/api/storageservices/naming-and-referencing-containers--blobs--and-metadata
     https://learn.microsoft.com/de-de/troubleshoot/mem/intune/app-management/develop-deliver-working-win32-app-via-intune
     https://blog.icewolf.ch/archive/2022/12/02/create-azure-ad-app-registration-with-microsoft-graph-powershell
-
+    https://knowledge-junction.in/2024/05/06/msgraph-create-app-microsoft-entra/
+    https://practical365.com/common-graph-api-errors-powershell/
     $azCopyUri = "https://aka.ms/downloadazcopy-v10-windows"
 
     Modules:
@@ -81,19 +96,22 @@
 
 param (
     [Parameter(Mandatory = $false)]
-    [string]$SourceDir = "C:\Intunewin\Don Ho_Notepad++_8.7.5_MUI",
+    [string]$SourceDir = "C:\Temp\think-cell_13.0.35.788_MUI",
 
     [Parameter(Mandatory = $false)]
     [string]$outputDir="C:\Intunewin\Output",
 
     [Parameter(Mandatory = $false)]
     [bool]$Upload= $true,  
+
+    [Parameter(Mandatory = $false)]
+    [bool]$Install= $true,  
     
     [Parameter(Mandatory = $false)]
     [string]$IconName, 
 
     [Parameter(Mandatory = $false)]
-    [string]$InstallCmd="Install.bat"
+    [string]$InstallCmd
 )
 # Fix for dropped on folders with spaces
 If ($PSBoundParameters.ContainsKey('SourceDir')){
@@ -104,6 +122,43 @@ If (-Not($OutputDir)){$OutputDir="$(Split-Path ($SourceDir))\Output"}
 
 
 #------------------------ Functions ------------------------
+
+Function Create-Shortcut{
+    Param(
+        [string]$TargetFile,
+        [string]$Arguments,
+        [string]$Iconpath,
+        [int]$IconNumber,
+        [string]$ShortcutFile,
+        [string]$Workdir,
+        [int]$Style #1 Normal, 3 Maximized, 7 Minimized
+    )
+    $WScriptShell = New-Object -ComObject WScript.Shell
+    $Shortcut = $WScriptShell.CreateShortcut($ShortcutFile)
+    $Shortcut.TargetPath = $TargetFile
+    If ($Iconpath) {$Shortcut.IconLocation = "$($Iconpath),$IconNumber"}
+    $Shortcut.Arguments = "$Arguments"
+    $Shortcut.WorkingDirectory = $Workdir
+    $Shortcut.WindowStyle = $Style
+    $Shortcut.Save()
+} 
+
+function Create-DummyFile{
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$PackagDir,
+
+        [Parameter(Mandatory = $true)]
+        [int]$SizeMB
+
+        )
+    $sizeInBytes = $SizeMB * 1MB
+    $randomData = [byte[]]::new($sizeInBytes)
+    [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($randomData)
+    [System.IO.File]::WriteAllBytes("$PackagDir\dummyfile.txt", $randomData)
+}
+
 function Wait-ForFileProcessing {
     # Wait for the file to be processed we will check the file upload state every 10 seconds
     [cmdletbinding()]
@@ -232,6 +287,9 @@ function New-IntuneWin32App {
         [Parameter(Mandatory = $true)]
         [string]$AppPath,
 
+        [Parameter(Mandatory = $false)]
+        [bool]$Install= $true,
+
         [Parameter(Mandatory = $true)]
         [string]$SourceDir,
 
@@ -240,26 +298,26 @@ function New-IntuneWin32App {
     )
 
     # Check if the required modules are installed
-    $modules = 'Az.Storage', 'Microsoft.Graph.Devices.CorporateManagement', 'Microsoft.Graph.Authentication'
+    $modules = 'Az.Storage', 'Microsoft.Graph.Devices.CorporateManagement', 'Microsoft.Graph.Authentication', 'Microsoft.Graph.Applications'
     $installed = @((Get-Module $modules -ListAvailable).Name | Select-Object -Unique)
     $notInstalled = Compare-Object $modules $installed -PassThru
 
     # At least one module is missing.
     # Install the missing modules now.
     if ($notInstalled) { 
-    Write-Host "Installing required modules..." -ForegroundColor Yellow
-    Install-Module -Scope CurrentUser $notInstalled -Force -AllowClobber
+        Write-Host "Installing required modules..." -ForegroundColor Yellow
+        Install-Module -Scope CurrentUser $notInstalled -Force -AllowClobber
     }
 
     # Connect to Microsoft Graph Using the Tenant ID and Client Secret Credential
     Write-Host "Connecting to Microsoft Graph..." -ForegroundColor Yellow
     $null = Disconnect-MgGraph -ErrorAction SilentlyContinue
-    Connect-Intune
+    Connect-Intune -SecretFile "$PSScriptRoot\appreg-intune-CreateIntuneApp-Script-ReadWrite-Prod.json" -AppName "appreg-intune-CreateIntuneApp-Script-ReadWrite" -ApplicationPermissions "DeviceManagementApps.ReadWrite.All" -Scopes "Application.ReadWrite.All"
 
     # Get the Metadata from the install.bat
-    $installCmd = "install.bat"
-    $uninstallCmd = "uninstall.bat"
-    $installCmdString= get-content "$SourceDir\$installCmd"
+    $installCmd = $script:installCmd 
+    $uninstallCmd = $script:uninstallCmd
+    $installCmdString= get-content "$SourceDir\$installCmd" -Encoding UTF8
     $displayName = ($installCmdString -match "REM DESCRIPTION").Replace("REM DESCRIPTION","").Trim()
     $publisher = ($installCmdString -match "REM MANUFACTURER").Replace("REM MANUFACTURER","").Trim()
     If ($installCmdString -match "REM FILENAME"){$fileName = ($installCmdString -match "REM FILENAME").Replace("REM FILENAME","").Trim()}
@@ -270,13 +328,13 @@ function New-IntuneWin32App {
     $IntuneWinMetadata = $IntuneWinData.DetectionXMLContent
 
     # Create the Win32 App in Intune if it does not exist
-    $MobileAppID=(Get-MgDeviceAppManagementMobileApp | Where-Object {$_.DisplayName -eq $displayName}).Id
+    $MobileAppID=((Invoke-MgGraphRequest -Method Get "https://graph.microsoft.com/beta/deviceAppManagement/mobileApps" ).value | Where-Object {$_.DisplayName -eq $displayName -and $_.displayVersion -eq $version}).id
 
     If (-not $MobileAppID){
         # If no icon is supplied Search for the Icon
         If ([string]::IsNullOrEmpty($IconName)){
             Write-Host "Searching for Icon..." -ForegroundColor Yellow
-            $Iconpath=(Get-childitem -Path $SourceDir -Include *.png,*.jpg,*jpeg -Recurse| Select-Object -First 1).FullName
+            $Iconpath=(Get-childitem -Path $SourceDir -Include *.png,*.jpg,*jpeg -Recurse -Depth 1| Select-Object -First 1).FullName
         }
         If ($Iconpath -like "*.jpg" -or $Iconpath -like "*.jpeg"){
             $IconType = "image/jpeg"
@@ -310,7 +368,7 @@ function New-IntuneWin32App {
             $Icon = $null
         }
         $Text= $Descr = ""
-        $Description = $(get-childitem $SourceDir -Filter "Description*")
+        $Description = $(get-childitem $SourceDir -Filter "Description*" -Recurse -Depth 1)
         If (-Not $Description){
             $Description = "No Description found. Please Update the Description manually!"
         }
@@ -320,14 +378,14 @@ function New-IntuneWin32App {
                 $Descr += $Text + "`r`n`r`n`r`n"
 
             }
-            $DescriptionText = $Descr.TrimEnd("`r`n`r`n")
+            $DescriptionText = [string]$Descr.TrimEnd("`r`n`r`n")
         }
         else {
-            $DescriptionText = Get-Content -Path $File.FullName -Encoding UTF8 -Raw
+            $DescriptionText = [string](Get-Content -Path $Description.FullName -Encoding UTF8 -Raw)
         }
 
         If(($installCmdString -match "msiexec").Count -gt 0){
-            $MSIName = (get-childitem $SourceDir -Filter "*.msi")[0].FullName
+            $MSIName = (get-childitem $SourceDir -Filter "*.msi" -Recurse -Depth 1)[0].FullName
             $MSIProductCode = (Get-AppLockerFileInformation $MSIName |Select-Object -ExpandProperty Publisher).BinaryName
             $Rule=@{
                 "@odata.type"= "#microsoft.graph.win32LobAppProductCodeRule"
@@ -342,9 +400,27 @@ function New-IntuneWin32App {
                 If ($filePath){
                     $path= (Split-Path -Path $filePath -Parent)
                     $fileOrFolderName= (Split-Path -Path $filePath -Leaf)
+                    $FileVersion = (Get-Item $filePath).VersionInfo.FileVersion
+                    If($FileVersion -ne $version){
+                        Write-Host "File Version ($version) does not match installed Version ($FileVersion), Please fix this manually! " -ForegroundColor Red
+                    }
                 }
                 Else{
-                    Write-Host "No file path could be found. Please Update the file Rule manually!" -ForegroundColor Red
+                    Write-Host "No file path could be found.Installing Application..." -ForegroundColor Yellow
+                    If ($Install){
+                        $null = Start-Process -FilePath "$SourceDir\$installCmd" -Wait -passthru -Verb RunAs
+                        $filePath = (Get-ChildItem -Path "C:\Program*"  -Recurse -ErrorAction SilentlyContinue -Include $fileName -Depth 3).FullName
+                        If ($filePath){
+                            $path= (Split-Path -Path $filePath -Parent)
+                            $fileOrFolderName= (Split-Path -Path $filePath -Leaf)
+                            $version = (Get-Item $filePath).VersionInfo.FileVersion
+                        }
+                        Write-Host "Removing Application..." -ForegroundColor Yellow
+                        $null = Start-Process -FilePath "$SourceDir\$uninstallCmd" -Wait -passthru -Verb RunAs
+                        Else{
+                            Write-Host "No file path could be found. Please Update the file Rule manually!" -ForegroundColor Red
+                        }
+                    }
                 }
             }
             Else{
@@ -361,9 +437,9 @@ function New-IntuneWin32App {
                 "comparisonValue"= $version
             }
             If($fileName){
-                Write-Host "----------------------------------------------" -ForegroundColor Green
+                Write-Host "==========================================" -ForegroundColor Green
                 Write-Host "File Rule created: $($Rule |Out-String)" -ForegroundColor Green
-                Write-Host "----------------------------------------------" -ForegroundColor Green
+                Write-Host "==========================================" -ForegroundColor Green
             }
         }
     
@@ -405,9 +481,16 @@ function New-IntuneWin32App {
          }
         else {
             Write-Host "Failed to create the App. Please check the parameters and try again." -ForegroundColor Red
+            Read-Host "Press Enter to close the window"
             Exit 1
         }
     }
+    else{
+        Write-Host "This App already exists with this Version number, please create a new App or Version!" -ForegroundColor Red
+        Read-Host "Press Enter to close the window"
+        Exit 0
+        }
+
 
     # Prepare File Upload to Azure Blob Storage
     $UploadFile =$IntuneWinData.ExtractedFile
@@ -432,6 +515,7 @@ function New-IntuneWin32App {
         $file = Invoke-MgGraphRequest -Method Get -Uri $fileUri
         If($file.value.isCommitted -eq "True"){
             Write-Host "This App is already committed. Please create a new App!" -ForegroundColor Green
+            Read-Host "Press Enter to close the window"
             Exit 0
         }
         Write-Host "App already exists. Using existing App." -ForegroundColor Yellow
@@ -476,6 +560,7 @@ function New-IntuneWin32App {
     }
     catch{
         Write-Host "Failed to commit file to Azure Blob Storage. Status code: $($_.Exception.Message)" -ForegroundColor Red
+        Read-Host "Press Enter to close the window"
         Exit 1
     }
     Write-Host "Waiting for the file to be committed..." -ForegroundColor Yellow
@@ -497,10 +582,12 @@ function New-IntuneWin32App {
     }   
     catch{
         Write-Host "Failed to commit file to App. Status code: $($_.Exception.Message)" -ForegroundColor Red
+        Read-Host "Press Enter to close the window"
         Exit 1
     }
     Write-Host "App successfully committed!" -ForegroundColor Green
 
+    #Fix Version and Description
     $displayversionBody = @{
         "@odata.type" = "#microsoft.graph.win32LobApp"
         displayVersion = $version
@@ -511,6 +598,7 @@ function New-IntuneWin32App {
    }
    Catch{
        Write-Host "Failed to update the display version. Status code: $($_.Exception.Message)" -ForegroundColor Red
+       Read-Host "Press Enter to close the window"
        Exit 1
    }
 
@@ -521,130 +609,178 @@ function New-IntuneWin32App {
     Write-Host "Name: $displayName" -ForegroundColor Green
     Write-Host "Version: $version" -ForegroundColor Green
     Write-Host "==========================================" -ForegroundColor Green
-
 }
 
 function Connect-Intune{
     [CmdletBinding()]
     param (
         [Parameter(Mandatory = $false)]
-        [string]$SettingsFile = "$IntunewinDir\Settings.json",
+        [string]$SecretFile = "$env:Temp\Settings.json",
+		[Parameter(Mandatory = $false)]
+        [string]$Scopes = "Application.ReadWrite.OwnedBy",
         [Parameter(Mandatory = $false)]
-        [string]$AppName = "Intune App Registration (Custom)"
+        [string]$AppName = "appreg-inune-BootMediaBuilder-Script-ReadWrite",
+		[Parameter(Mandatory = $false)]
+		[string[]]$ApplicationPermissions = "DeviceManagementServiceConfig.ReadWrite.All, Organization.Read.All",
+		[Parameter(Mandatory = $false)]
+		[string[]]$DelegationPermissions = ""
+
     )
-    If (Test-Path -Path $SettingsFile){
-        Write-Host "Reading Settings file..." -ForegroundColor Yellow
-        Get-Content -Path $SettingsFile | ConvertFrom-Json | ForEach-Object {
-            $TenantID = $_.TenantID
-            $AppID = $_.AppID
-            $AppSecret = $_.AppSecret
-        }
-        Write-Host "Settings file read successfully." -ForegroundColor Green
-        Write-Host "Using App Secret to connect to Tenant: $TenantID" -ForegroundColor Green
-        $SecureClientSecret = ConvertTo-SecureString -String $AppSecret -AsPlainText -Force
-        $ClientSecretCredential = New-Object -TypeName System.Management.Automation.PSCredential -ArgumentList $AppId, $SecureClientSecret
-        Connect-MgGraph -TenantId $TenantID -ClientSecretCredential $ClientSecretCredential -NoWelcome
-    }
-    Else{
-        Write-Host "Settings file not found. Creating a new one..." -ForegroundColor Yellow
+    If (Test-Path -Path $SecretFile){
+		Write-Host "Reading Settings file..." -ForegroundColor Yellow
+		$SecretSettings = Get-Content -Path $SecretFile | ConvertFrom-Json
+		$TenantID = $SecretSettings.TenantID
+		$AppID = $SecretSettings.AppID
+		$AppSecret = $SecretSettings.AppSecret
+		Write-Host "Settings file read successfully." -ForegroundColor Green
+		Write-Host "Using App Secret to connect to Tenant: $TenantID" -ForegroundColor Green
+		$SecureClientSecret = ConvertTo-SecureString -String $AppSecret -AsPlainText -Force
+		$ClientSecretCredential = New-Object -TypeName System.Management.Automation.PSCredential -ArgumentList $AppId, $SecureClientSecret
+		$null = Connect-MgGraph -TenantId $TenantID -ClientSecretCredential $ClientSecretCredential -NoWelcome
 
-        Connect-MgGraph -Scopes "DeviceManagementApps.ReadWrite.All, DeviceManagementServiceConfig.ReadWrite.All,Application.ReadWrite.All" -NoWelcome
+    	#Test if Permissions are correct
+		$actscopes = (Get-MgContext | Select-Object -ExpandProperty Scopes).Split(" ")
+		$IncorrectScopes = ""
+		$AppPerms = $ApplicationPermissions.Split(",").Trim()
+		foreach ($AppPerm in $AppPerms) {
+			if ($actscopes -notcontains $AppPerm) {
+				$IncorrectScopes += $AppPerm -join ","
+			}
+		}
+		if ($IncorrectScopes) {
+			Write-Host "==========================================" -ForegroundColor Red
+			Write-Host " The following permissions are missing:" -ForegroundColor Red
+			Write-Host " $IncorrectScopes" -ForegroundColor Green
+			Write-Host " Make sure to grant admin consent to your " -ForegroundColor Red
+			Write-Host " API permissions in your newly created " -ForegroundColor Red
+			Write-Host " App registration !!! " -ForegroundColor Red
+			Write-Host "==========================================" -ForegroundColor Red
+			Write-Host "https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade/quickStartType~/null/sourceType/Microsoft_AAD_IAM" -ForegroundColor Green
+			Write-Host $Error[0].ErrorDetails
+            Read-Host "Press Enter to close the window"
+			Exit 1 
+		}
+		else{
+			Write-Host "MS-Graph scopes: $($actscopes -join ", ") are correct" -ForegroundColor Green
+		}
+	}
+	Else{
+		Write-Host "Settings file not found. Creating a new one..." -ForegroundColor Yellow
 
-        $TenantData =Get-MgContext
-        $TenantID = $TenantData.TenantId
+		Connect-MgGraph -Scopes $Scopes -NoWelcome
 
-        #Create a new Application
-        $AppObj = Get-MgApplication -Filter "DisplayName eq '$AppName'"
-        If ($AppObj){
-            $AppID = $AppObj.AppId
-            Write-Host "App already exists. Updating existing App." -ForegroundColor Yellow
-        }
-        Else{
-            Write-Host "Creating a new Application..." -ForegroundColor Yellow 
-            $AppObj = New-MgApplication -DisplayName $AppName
-            $AppID = $AppObj.AppId
-            If($AppID){
-                Write-Host "App created successfully. App ID: $AppID" -ForegroundColor Green
-            }
-            Else{
-                Write-Host "Failed to create the App. Please check the parameters and try again." -ForegroundColor Red
-                Exit 1  
-            }
-        }
+		$TenantData =Get-MgContext
+		$TenantID = $TenantData.TenantId
 
-        $accessBody = @{    
-            value = @(
-                @{
-                resourceAppId = "00000003-0000-0000-c000-000000000000"
-                resourceAccess = @(
-                        @{
-                            id = "7b3f05d5-f68c-4b8d-8c59-a2ecd12f24af"
-                            type = "Scope"
-                        }
-                        @{
-                            id = "e1fe6dd8-ba31-4d61-89e7-88639da4683d"
-                            type = "Scope"
-                        }
-                        @{
-                            id = "78145de6-330d-4800-a6ce-494ff2d33d07"
-                            type = "Role"
-                        }
-                        @{
-                            id = "06a5fe6d-c49d-46a7-b082-56b1b14103c7"
-                            type = "Role"
-                        }
-                        @{
-                            id = "5ac13192-7ace-4fcf-b828-1a26f28068ee"
-                            type = "Role"
-                        }
-                    )
-                }
-            )
-        }
-        $fileUri = "https://graph.microsoft.com/v1.0/applications/$($AppObj.ID)/RequiredResourceAccess"
-        try{
-            $null = Invoke-MgGraphRequest -Method PATCH -Uri $fileUri -Body ($accessBody | ConvertTo-Json -Depth 4) 
-        }
-        catch{
-            Write-Host "Failed to update the Required Resource Access. Status code: $($_.Exception.Message)" -ForegroundColor Red
+		#Create a new Application
+		$AppObj = Get-MgApplication -Filter "DisplayName eq '$AppName'"
+		If ($AppObj){
+			$AppID = $AppObj.AppId
+			Write-Host "App already exists. Updating existing App." -ForegroundColor Yellow
+		}
+		Else{
+			Write-Host "Creating a new Application..." -ForegroundColor Yellow 
+			$AppObj = New-MgApplication -DisplayName $AppName
+			$AppID = $AppObj.AppId
+			If($AppID){
+				Write-Host "App created successfully. App ID: $AppID" -ForegroundColor Green
+			}
+			Else{
+				Write-Host "Failed to create the App. Please check the parameters and try again." -ForegroundColor Red
+				Exit 1  
+			}
+		}
+		# Define Application and Delegation Permission ids and type in a hash
+		$permissions = [ordered]@{}
+		If ($ApplicationPermissions){
+			$AppPermissions = $ApplicationPermissions.Split(",").Trim()
+			$PermID = ""
+			foreach($APermission in $AppPermissions){
+				$PermID = (Find-MgGraphPermission $APermission -PermissionType Application -ExactMatch).Id
+				$permissions.add($PermID,"Role")
+			}
+		}
+
+		If ($DelegationPermissions){
+			$DelPermissions = $DelegationPermissions.Split(",").Trim()
+			$PermID = ""
+			foreach($DPermission in $DelPermissions){
+				$PermID = (Find-MgGraphPermission $DPermission -PermissionType Delegated -ExactMatch).Id
+				$permissions.add($PermID,"Scope")
+			}
+		}
+
+		# Build the accessBody for the hash
+		$accessBody = [ordered]@{
+			value = @(
+				@{
+					resourceAppId  = "00000003-0000-0000-c000-000000000000"
+					resourceAccess = @()
+				}
+			)
+		}
+
+		# Add the  id/type pairs to the resourceAccess array
+		foreach ($id in $permissions.Keys) {
+			$accessBody.value[0].resourceAccess += @{
+				id   = $id
+				type = $permissions[$id]
+			}
+		}
+
+		# Aplly upload the selected permissions via Graph API
+		$fileUri = "https://graph.microsoft.com/v1.0/applications/$($AppObj.ID)/RequiredResourceAccess"
+		try{
+			$null = Invoke-MgGraphRequest -Method PATCH -Uri $fileUri -Body ($accessBody | ConvertTo-Json -Depth 4) 
+		}
+		catch{
+			Write-Host "Failed to update the Required Resource Access. Status code: $($_.Exception.Message)" -ForegroundColor Red
+			Exit 1
+		}
+
+		$passwordCred = @{
+			"displayName" = "Secret-$($AppName)"
+			"endDateTime" = (Get-Date).AddMonths(+12)
+		}
+		$ClientSecret = Add-MgApplicationPassword -ApplicationId  $AppObj.ID -PasswordCredential $passwordCred
+
+		$AppSecret = $ClientSecret.SecretText
+		If($AppSecret){
+			Write-Host "App Secret ($AppSecret) created successfully." -ForegroundColor Green
+		}
+		Else{
+			Write-Host "Failed to create the App Secret. Please check the parameters and try again." -ForegroundColor Red
+			Read-Host "Press Enter to close the window"
             Exit 1
-        }
+		}
 
-        $passwordCred = @{
-            "displayName" = "$($AppName)Secret"
-            "endDateTime" = (Get-Date).AddMonths(+12)
-        }
-        $ClientSecret = Add-MgApplicationPassword -ApplicationId  $AppObj.ID -PasswordCredential $passwordCred
+		#Update Settings file with gathered information
+		$SecretSettings = [ordered]@{
+			Comment1 = "Make sure to keep this secret safe. This secret can be used to connect to your tenant!"
+			Comment2 = "The following permissions are granted with this secret:"
+			ApplicationPermissions = $ApplicationPermissions
+			DelegationPermissions = $DelegationPermissions
+			AppName = $AppObj.DisplayName
+			CreatedBy = $TenantData.Account
+			TenantID = $TenantID
+			AppID = $AppID
+			AppSecret = $AppSecret
+		}
+		Out-File -FilePath $SecretFile -InputObject ($SecretSettings | ConvertTo-Json)
 
-        $AppSecret = $ClientSecret.SecretText
-        If($AppSecret){
-            Write-Host "App Secret ($AppSecret) created successfully." -ForegroundColor Green
-        }
-        Else{
-            Write-Host "Failed to create the App Secret. Please check the parameters and try again." -ForegroundColor Red
-            Exit 1
-        }
-
-        #Update Settings file with gathered information
-        $Settings = [ordered]@{
-            _Comment1 = "Make sure to keep this secret safe. This secret can be used to connect to your tenant!"
-            _Comment2 = "The following permissions are granted with this secret"
-            _Comment3 = "DeviceManagementApps.ReadWrite.All, DeviceManagementServiceConfig.ReadWrite.All,Application.ReadWrite.All"
-            AppName = $AppObj.DisplayName
-            CreatedBy = $TenantData.Account
-            TenantID = $TenantID
-            AppID = $AppID
-            AppSecret = $AppSecret
-        }
-        Out-File -FilePath $SettingsFile -InputObject ($Settings | ConvertTo-Json)
-
-        Write-Host ""
-        Write-Host "==========================================================" -ForegroundColor Green
-        Write-Host "A new App registration ""$($AppObj.DisplayName)"" has been created, you should open" -ForegroundColor Green
-        Write-Host """https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade/quickStartType~/null/sourceType/Microsoft_AAD_IAM"""  -ForegroundColor Green
-        Write-Host "and grant admin permission!" -ForegroundColor Green
-        Write-Host "==========================================================" -ForegroundColor Green
-    }
+		Write-Host ""
+		Write-Host "==========================================================" -ForegroundColor Red
+		Write-Host " A new App Registration ""$($AppObj.DisplayName)"" " -ForegroundColor Green
+		Write-Host " has been created." -ForegroundColor Green
+		Write-Host " Make sure to grant admin consent to your " -ForegroundColor Red
+		Write-Host " API permissions in your newly created " -ForegroundColor Red
+		Write-Host " App registration !!! " -ForegroundColor Red
+		Write-Host  "==========================================================" -ForegroundColor Red
+		Write-Host " Use this URL to grant consent:" -ForegroundColor Green
+		Write-Host "https://entra.microsoft.com/#view/Microsoft_AAD_RegisteredApps/ApplicationsListBlade/quickStartType~/null/sourceType/Microsoft_AAD_IAM" -ForegroundColor Green
+        Read-Host "Press Enter to close the window"		
+        Exit 0
+	}
 }
 
 
@@ -655,22 +791,30 @@ Write-Host "          IntuneWin Packaging Tool         " -ForegroundColor Cyan
 Write-Host "==========================================" -ForegroundColor Cyan
 Write-Host ""
 
-Connect-Intune
-
-
-
-
 # Define paths
 $intuneWinAppUtil = "$PSScriptRoot\IntuneWinAppUtil.exe"
 
 # URL to download IntuneWinAppUtil.exe
 $downloadUrl = "https://github.com/microsoft/Microsoft-Win32-Content-Prep-Tool/raw/master/IntuneWinAppUtil.exe"
 
+# Check if link exists an create one
+$LinkPath = "$PSScriptRoot\PackIt.lnk"
+if (-not (Test-Path -Path $LinkPath)) {
+    $TargetFile = "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
+    $Arguments =  "-Executionpolicy Bypass -command ""$PSScriptRoot\PackIt.ps1"""
+    $Iconpath = "C:\Windows\System32\shell32.dll"
+    Create-Shortcut -TargetFile $TargetFile -ShortcutFile $LinkPath -Arguments $Arguments -Iconpath $Iconpath -IconNumber 12 -Workdir $PSScriptRoot -Style 1
+}
+
 try {
     # Get the source directory from the dragged file/folder
     if (-not (Test-Path -Path $sourceDir)) {
         throw "The provided source directory does not exist: $sourceDir, Drag and drop a folder onto the script."
     }
+    
+    #Get the commands for Install and uninstall
+    $InstallCmd = (Get-ChildItem -Path $sourceDir -Recurse -Depth 1 -File -Include "Install*.cmd","Install*.bat").Name
+    $UninstallCmd = (Get-ChildItem -Path $sourceDir -Recurse -Depth 1 -File -Include "Uninstall*.cmd","Uninstall*.bat").Name
 
     # Create Output directory silently
     if (-not (Test-Path -Path $outputDir)) {
@@ -697,7 +841,22 @@ try {
     if (-not (Test-Path -Path $renamedFile)) {
         # Run IntuneWinAppUtil.exe silently
         Write-Host "Packaging with IntuneWinAppUtil.exe..." -ForegroundColor Green
-        $null = & $intuneWinAppUtil -c $sourceDir -s $installCmd -o $outputDir 
+        $folderSize = (Get-ChildItem -Path $sourceDir -Recurse | Measure-Object -Property Length -Sum).Sum
+        If ($folderSize -lt 9437184) {
+            $sizeMB = [int]((9437184 - $folderSize) / 1048576)
+        Create-DummyFile -PackagDir $sourceDir -SizeMB $sizeMB
+        }
+
+        # Unblock any files that have the Zone.Identifier (downloaded from Internet)
+        Get-ChildItem -Path $sourceDir -Recurse | ForEach-Object {
+            $streams = Get-Item $_.FullName -Stream * -ErrorAction SilentlyContinue
+            if ($streams -match "Zone.Identifier") {
+                Write-Host "⚠️  Unblocking file:" $_.FullName -ForegroundColor Yellow
+                Unblock-File -Path $_.FullName
+            }
+        }
+        
+        $null = &$intuneWinAppUtil -c $sourceDir -s $installCmd -o $outputDir 
 
         # Move and rename the generated file
         $generatedFile = "$outputDir\Install.intunewin"
@@ -727,8 +886,9 @@ Write-Host "==========================================" -ForegroundColor Green
 Write-Host "intunewin generated successfully!" -ForegroundColor Green
 Write-Host "==========================================" -ForegroundColor Green
 
+# Upload the generated .intunewin file to Intune and generate a application.
 If ($Upload){
-    New-IntuneWin32App -AppPath $renamedFile -SourceDir $sourceDir -IconName $IconName
+    New-IntuneWin32App -AppPath $renamedFile -SourceDir $sourceDir -IconName $IconName -Install $Install
 }
-
+Read-Host "Press Enter to close the window"
 exit 0
