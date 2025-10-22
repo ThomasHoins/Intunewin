@@ -8,7 +8,7 @@
     If the IntuneWinAppUtil.exe file is not found, it will be automatically downloaded from the official Microsoft repository.
 
 .NOTES
-    Version:        2.8.3
+    Version:        2.9.0
     Author:         Thomas Hoins (DATAGROUP OIT)
     Initial Date:   14.01.2025
     Changes:        14.01.2025 Added error handling, clean outputs, and timestamp-based renaming.
@@ -33,6 +33,7 @@
     Changes:        08.04.2025 Fixed a Bug, We did not consider already existing Versions and special characters in the install bat are fixed now.
     Changes:        18.09.2025 Added automatic install and uninstall command detection.
     Changes:        30.09.2025 Added automatic unlock for Internet files.
+	Changes:		22.10.2025 Added registry detection rule, prefered to file rule.
     Issues: 	Still having issues with the description, there is an issue with Special cahracters.
 
     
@@ -96,7 +97,7 @@
 
 param (
     [Parameter(Mandatory = $false)]
-    [string]$SourceDir = "C:\Temp\think-cell_13.0.35.788_MUI",
+    [string]$SourceDir = "C:\Temp\think-cell_13.0.35.788_MU_intune",
 
     [Parameter(Mandatory = $false)]
     [string]$outputDir="C:\Intunewin\Output",
@@ -298,7 +299,7 @@ function New-IntuneWin32App {
     )
 
     # Check if the required modules are installed
-    $modules = 'Az.Storage', 'Microsoft.Graph.Devices.CorporateManagement', 'Microsoft.Graph.Authentication', 'Microsoft.Graph.Applications'
+    $modules = 'Az.Storage', 'Microsoft.Graph.Devices.CorporateManagement', 'Microsoft.Graph.Authentication', 'Microsoft.Graph.Applications','Microsoft.Graph.Beta.Devices.CorporateManagement'
     $installed = @((Get-Module $modules -ListAvailable).Name | Select-Object -Unique)
     $notInstalled = Compare-Object $modules $installed -PassThru
 
@@ -329,6 +330,7 @@ function New-IntuneWin32App {
 
     # Create the Win32 App in Intune if it does not exist
     $MobileAppID=((Invoke-MgGraphRequest -Method Get "https://graph.microsoft.com/beta/deviceAppManagement/mobileApps" ).value | Where-Object {$_.DisplayName -eq $displayName -and $_.displayVersion -eq $version}).id
+
 
     If (-not $MobileAppID){
         # If no icon is supplied Search for the Icon
@@ -384,7 +386,7 @@ function New-IntuneWin32App {
             $DescriptionText = [string](Get-Content -Path $Description.FullName -Encoding UTF8 -Raw)
         }
 
-        If(($installCmdString -match "msiexec").Count -gt 0){
+        If(($installCmdString -match "\b\S*msiexec(?:\.exe)?\s+/i\b.*?").Count -gt 0){
             $MSIName = (get-childitem $SourceDir -Filter "*.msi" -Recurse -Depth 1)[0].FullName
             $MSIProductCode = (Get-AppLockerFileInformation $MSIName |Select-Object -ExpandProperty Publisher).BinaryName
             $Rule=@{
@@ -393,22 +395,23 @@ function New-IntuneWin32App {
                 productCode= $MSIProductCode
                 }
         }
-        Else {
-            If($fileName){
-                Write-Host "Searching for File Path..." -ForegroundColor Yellow
-                $filePath = (Get-ChildItem -Path "C:\Program*"  -Recurse -ErrorAction SilentlyContinue -Include $fileName -Depth 3).FullName
-                If ($filePath){
-                    $path= (Split-Path -Path $filePath -Parent)
-                    $fileOrFolderName= (Split-Path -Path $filePath -Leaf)
-                    $FileVersion = (Get-Item $filePath).VersionInfo.FileVersion
-                    If($FileVersion -ne $version){
-                        Write-Host "File Version ($version) does not match installed Version ($FileVersion), Please fix this manually! " -ForegroundColor Red
-                    }
+        ElseIf($fileName) {
+            Write-Host "Searching for File Path..." -ForegroundColor Yellow
+            $filePath = (Get-ChildItem -Path "C:\Program*"  -Recurse -ErrorAction SilentlyContinue -Include $fileName -Depth 3).FullName
+            If ($filePath){
+                $path= (Split-Path -Path $filePath -Parent)
+                $fileOrFolderName= (Split-Path -Path $filePath -Leaf)
+                $FileVersion = (Get-Item $filePath).VersionInfo.FileVersion
+                If($FileVersion -ne $version){
+                    Write-Host "File Version ($version) does not match installed Version ($FileVersion), Please fix this manually! " -ForegroundColor Red
                 }
-                Else{
-                    Write-Host "No file path could be found.Installing Application..." -ForegroundColor Yellow
-                    If ($Install){
-                        $null = Start-Process -FilePath "$SourceDir\$installCmd" -Wait -passthru -Verb RunAs
+            }
+            Else{
+                Write-Host "No file path could be found." -ForegroundColor Yellow
+                If ($Install){
+                    $Answer = (Read-Host -Prompt "Do you want to install the Application...[Y|N]").ToUpper()
+                    If ($Answer -eq "Y"){
+                        $null = Start-Process -FilePath "$SourceDir\$installCmd" -Wait -passthru -Verb RunAs -ErrorAction SilentlyContinue
                         $filePath = (Get-ChildItem -Path "C:\Program*"  -Recurse -ErrorAction SilentlyContinue -Include $fileName -Depth 3).FullName
                         If ($filePath){
                             $path= (Split-Path -Path $filePath -Parent)
@@ -416,18 +419,16 @@ function New-IntuneWin32App {
                             $version = (Get-Item $filePath).VersionInfo.FileVersion
                         }
                         Write-Host "Removing Application..." -ForegroundColor Yellow
-                        $null = Start-Process -FilePath "$SourceDir\$uninstallCmd" -Wait -passthru -Verb RunAs
+                        $null = Start-Process -FilePath "$SourceDir\$uninstallCmd" -Wait -passthru -Verb RunAs -ErrorAction SilentlyContinue
                         Else{
-                            Write-Host "No file path could be found. Please Update the file Rule manually!" -ForegroundColor Red
+                            Write-Host "No file path could be found. Please Update the Detection Rule manually!" -ForegroundColor Red
                         }
                     }
                 }
             }
-            Else{
-                Write-Host "No file path could be found. Please Update the file Rule manually!" -ForegroundColor Red
-            }
+
             $Rule=@{
-                "@odata.type"= "microsoft.graph.win32LobAppFileSystemRule"
+                "@odata.type"= "#microsoft.graph.win32LobAppFileSystemRule"
                 "ruleType"= "detection"
                 "path"= $path
                 "fileOrFolderName"= $fileOrFolderName
@@ -436,15 +437,45 @@ function New-IntuneWin32App {
                 "operator"= "greaterThanOrEqual"
                 "comparisonValue"= $version
             }
-            If($fileName){
-                Write-Host "==========================================" -ForegroundColor Green
-                Write-Host "File Rule created: $($Rule |Out-String)" -ForegroundColor Green
-                Write-Host "==========================================" -ForegroundColor Green
+
+        }
+        Else{
+            $registryPaths = @(
+              "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
+              "HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall"
+            )
+
+            $found = $false
+
+            foreach ($path in $registryPaths) {
+                $apps = Get-ChildItem -Path $path | Get-ItemProperty | Where-Object { 
+                    $_.DisplayName -like $appName -and $_.DisplayVersion -eq $expectedVersion 
+                }
+                if ($apps) {
+                    $RegPath = ($apps.PSPath).Replace("Microsoft.PowerShell.Core\Registry::","")
+                    $Rule=@{
+                        "@odata.type"= "#microsoft.graph.win32LobAppRegistryRule"
+                        "ruleType"= "detection"
+                        "check32BitOn64System"= $false
+                        "keyPath"= $RegPath
+                        "valueName"= "DisplayVersion"
+                        "operationType"= "version"
+                        "operator"= "greaterThanOrEqual"
+                        "comparisonValue"= $version
+                    }
+                }
+                Else{
+                    Write-Host "No Registry path could be found. Please Update the Detection Rule manually!" -ForegroundColor Red
+                }
             }
         }
+
+        Write-Host "==========================================" -ForegroundColor Green
+        Write-Host "Rule created: $($Rule |Out-String)" -ForegroundColor Green
+        Write-Host "==========================================" -ForegroundColor Green
     
         $params = @{
-            "@odata.type" = "microsoft.graph.win32LobApp"
+            "@odata.type" = "#microsoft.graph.win32LobApp"
             displayName = $displayName
             publisher = $publisher
             description = $DescriptionText
@@ -463,7 +494,7 @@ function New-IntuneWin32App {
                 $Rule
             )
             installExperience = @{
-                "@odata.type" = "microsoft.graph.win32LobAppInstallExperience"
+                "@odata.type" = "#microsoft.graph.win32LobAppInstallExperience"
                 runAsAccount = "system" #system, user
                 deviceRestartBehavior = "basedOnReturnCode" #basedOnReturnCode, allow, suppress, force
             }
@@ -475,7 +506,8 @@ function New-IntuneWin32App {
                 @{"returnCode" = 1618;"type" = "retry"}
             )
         }
-        $MobileAppID = (New-MgDeviceAppManagementMobileApp -BodyParameter (ConvertTo-Json($params))).Id
+        #$MobileAppID = (New-MgBetaDeviceAppManagementMobileApp -BodyParameter $params).Id
+        $MobileAppID = (Invoke-MgGraphRequest -Method POST -Uri "https://graph.microsoft.com/beta/deviceAppManagement/mobileApps" -Body (Convertto-Json $params) -ContentType "application/json").id
         if ($MobileAppID ) {
             Write-Host  "App created successfully. App ID: $MobileAppID" -ForegroundColor Green
          }
@@ -851,12 +883,12 @@ try {
         Get-ChildItem -Path $sourceDir -Recurse | ForEach-Object {
             $streams = Get-Item $_.FullName -Stream * -ErrorAction SilentlyContinue
             if ($streams -match "Zone.Identifier") {
-                Write-Host "⚠️  Unblocking file:" $_.FullName -ForegroundColor Yellow
+                Write-Host "Unblocking file:" $_.FullName -ForegroundColor Yellow
                 Unblock-File -Path $_.FullName
             }
         }
-        
-        $null = &$intuneWinAppUtil -c $sourceDir -s $installCmd -o $outputDir 
+        Write-Host "$intuneWinAppUtil -c $sourceDir -s $installCmd -o $outputDir"
+        $null = &$intuneWinAppUtil -c $sourceDir -s $installCmd -o $outputDir
 
         # Move and rename the generated file
         $generatedFile = "$outputDir\Install.intunewin"
