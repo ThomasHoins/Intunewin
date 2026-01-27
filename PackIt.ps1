@@ -8,7 +8,7 @@
     If the IntuneWinAppUtil.exe file is not found, it will be automatically downloaded from the official Microsoft repository.
 
 .NOTES
-    Version:        2.9.0
+    Version:        2.8.4
     Author:         Thomas Hoins (DATAGROUP OIT)
     Initial Date:   14.01.2025
     Changes:        14.01.2025 Added error handling, clean outputs, and timestamp-based renaming.
@@ -33,8 +33,9 @@
     Changes:        08.04.2025 Fixed a Bug, We did not consider already existing Versions and special characters in the install bat are fixed now.
     Changes:        18.09.2025 Added automatic install and uninstall command detection.
     Changes:        30.09.2025 Added automatic unlock for Internet files.
-	Changes:		22.10.2025 Added registry detection rule, prefered to file rule.
-    Issues: 	Still having issues with the description, there is an issue with Special cahracters.
+    Changes:        27.01.2026 Fixed MSI Rule detection and some other fixes
+    Issues: 	Still having issues with the description, there is an issue with Special characters.
+                Only Az:Storage version 9.4.0 and earlier is working so far. 
 
     
 
@@ -97,7 +98,7 @@
 
 param (
     [Parameter(Mandatory = $false)]
-    [string]$SourceDir = "C:\Temp\think-cell_13.0.35.788_MU_intune",
+    [string]$SourceDir = "\\srvHAMMECM01.ham.all4l.com\PKGSERVER\Learnpulse_Screenpresso_PRO_License_9_25_MUI",
 
     [Parameter(Mandatory = $false)]
     [string]$outputDir="C:\Intunewin\Output",
@@ -318,6 +319,7 @@ function New-IntuneWin32App {
     # Get the Metadata from the install.bat
     $installCmd = $script:installCmd 
     $uninstallCmd = $script:uninstallCmd
+    If([string]::IsNullOrEmpty($uninstallCmd)) {$uninstallCmd = "dummy"}
     $installCmdString= get-content "$SourceDir\$installCmd" -Encoding UTF8
     $displayName = ($installCmdString -match "REM DESCRIPTION").Replace("REM DESCRIPTION","").Trim()
     $publisher = ($installCmdString -match "REM MANUFACTURER").Replace("REM MANUFACTURER","").Trim()
@@ -370,6 +372,7 @@ function New-IntuneWin32App {
             $Icon = $null
         }
         $Text= $Descr = ""
+        $BoxColor = "Green"
         $Description = $(get-childitem $SourceDir -Filter "Description*" -Recurse -Depth 1)
         If (-Not $Description){
             $Description = "No Description found. Please Update the Description manually!"
@@ -386,8 +389,9 @@ function New-IntuneWin32App {
             $DescriptionText = [string](Get-Content -Path $Description.FullName -Encoding UTF8 -Raw)
         }
 
-        If(($installCmdString -match "\b\S*msiexec(?:\.exe)?\s+/i\b.*?").Count -gt 0){
+        If(($installCmdString -match "(?i)msiexec(?:\.exe)?\b.*?\s/i\b").Count -gt 0){
             $MSIName = (get-childitem $SourceDir -Filter "*.msi" -Recurse -Depth 1)[0].FullName
+            Write-Host "using MSI detection rule for $MSIName"  -ForegroundColor Green
             $MSIProductCode = (Get-AppLockerFileInformation $MSIName |Select-Object -ExpandProperty Publisher).BinaryName
             $Rule=@{
                 "@odata.type"= "#microsoft.graph.win32LobAppProductCodeRule"
@@ -404,6 +408,7 @@ function New-IntuneWin32App {
                 $FileVersion = (Get-Item $filePath).VersionInfo.FileVersion
                 If($FileVersion -ne $version){
                     Write-Host "File Version ($version) does not match installed Version ($FileVersion), Please fix this manually! " -ForegroundColor Red
+                    $BoxColor = "Red"
                 }
             }
             Else{
@@ -422,6 +427,7 @@ function New-IntuneWin32App {
                         $null = Start-Process -FilePath "$SourceDir\$uninstallCmd" -Wait -passthru -Verb RunAs -ErrorAction SilentlyContinue
                         Else{
                             Write-Host "No file path could be found. Please Update the Detection Rule manually!" -ForegroundColor Red
+                            $BoxColor = "Red"
                         }
                     }
                 }
@@ -449,9 +455,10 @@ function New-IntuneWin32App {
 
             foreach ($path in $registryPaths) {
                 $apps = Get-ChildItem -Path $path | Get-ItemProperty | Where-Object { 
-                    $_.DisplayName -like $appName -and $_.DisplayVersion -eq $expectedVersion 
+                    $_.DisplayName -like $displayName -and $_.DisplayVersion -eq $version 
                 }
                 if ($apps) {
+                    $found = $true
                     $RegPath = ($apps.PSPath).Replace("Microsoft.PowerShell.Core\Registry::","")
                     $Rule=@{
                         "@odata.type"= "#microsoft.graph.win32LobAppRegistryRule"
@@ -464,15 +471,24 @@ function New-IntuneWin32App {
                         "comparisonValue"= $version
                     }
                 }
-                Else{
-                    Write-Host "No Registry path could be found. Please Update the Detection Rule manually!" -ForegroundColor Red
-                }
+            }
+            If(!$found){
+                #Dummy file Rule
+                $Rule=@{
+                    "@odata.type"= "#microsoft.graph.win32LobAppFileSystemRule"
+                    "path"= "C:\Program Files\DummyApp\"
+                    "fileOrFolderName"= "DummyApp.exe"
+                    "check32BitOn64System"= $true
+                    "operationType"= "exists"
+                    }
+                Write-Host "No Registry path could be found. Please Update the Detection Rule manually!" -ForegroundColor Red
+                $BoxColor = "Red"
             }
         }
 
-        Write-Host "==========================================" -ForegroundColor Green
-        Write-Host "Rule created: $($Rule |Out-String)" -ForegroundColor Green
-        Write-Host "==========================================" -ForegroundColor Green
+        Write-Host "==========================================" -ForegroundColor $BoxColor
+        Write-Host "Rule created: $($Rule |Out-String)" -ForegroundColor $BoxColor
+        Write-Host "==========================================" -ForegroundColor $BoxColor
     
         $params = @{
             "@odata.type" = "#microsoft.graph.win32LobApp"
@@ -490,6 +506,7 @@ function New-IntuneWin32App {
             msiInformation = $null
             runAs32bit = $false
             largeIcon = $Icon
+            allowAvailableUninstall = $true
             rules = @(
                 $Rule
             )
@@ -561,12 +578,21 @@ function New-IntuneWin32App {
     # Upload the file to Azure Blob Storage 
     #  Get the SAS Token and Storage Account Name
     [System.Uri]$uriObject = $file.azureStorageUri
-    $storageAccountName = $uriObject.DnsSafeHost.Split(".")[0]
-    $sasToken = $uriObject.Query.Substring(1)
-    $uploadPath = $uriObject.LocalPath.Substring(1)
-    $container = $uploadPath.Split("/")[0]
-    $blobPath = $uploadPath.Substring($container.Length+1,$uploadPath.Length - $container.Length-1)
+
+    # extract Storage Account Name from Host
+    $storageAccountName = $uriObject.DnsSafeHost.Split('.')[0]
+
+    # SAS-Token (without the leading ?)
+    $sasToken = $uriObject.Query.TrimStart('?')
+
+    # extract Container and Blob-Path
+    $segments = $uriObject.AbsolutePath.TrimStart('/').Split('/')
+    $container = $segments[0]
+    $blobPath = ($segments[1..($segments.Length-1)] -join '/')
+
+    # build storage context
     $storageContext = New-AzStorageContext -StorageAccountName $storageAccountName -SasToken $sasToken
+
     #  do the actual file to Azure Blob Storage
     $blobUpload = Set-AzStorageBlobContent -File $UploadFile -Container $container -Context $storageContext -Blob $blobPath -Force
     Write-Host "Upload finished! Details: Name $($blobUpload.Name), ContentType $($blobUpload.ContentType), Length $($blobUpload.Length), LastModified $($blobUpload.LastModified)" -ForegroundColor Green
@@ -588,7 +614,7 @@ function New-IntuneWin32App {
 
     $commitFileUri = "https://graph.microsoft.com/beta/deviceAppManagement/mobileApps/$MobileAppID/microsoft.graph.win32LobApp/contentVersions/1/files/$ContentFileId/commit"
     try{
-        Invoke-MgGraphRequest -Method POST $commitFileUri -Body ($fileEncryptionInfo |ConvertTo-Json)
+        Invoke-MgGraphRequest -Method POST $commitFileUri -Body ($fileEncryptionInfo |ConvertTo-Json -Depth 10)
     }
     catch{
         Write-Host "Failed to commit file to Azure Blob Storage. Status code: $($_.Exception.Message)" -ForegroundColor Red
@@ -888,7 +914,7 @@ try {
             }
         }
         Write-Host "$intuneWinAppUtil -c $sourceDir -s $installCmd -o $outputDir"
-        $null = &$intuneWinAppUtil -c $sourceDir -s $installCmd -o $outputDir
+        &$intuneWinAppUtil -c $sourceDir -s $installCmd -o $outputDir
 
         # Move and rename the generated file
         $generatedFile = "$outputDir\Install.intunewin"
