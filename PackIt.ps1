@@ -34,6 +34,7 @@
     Changes:        18.09.2025 Added automatic install and uninstall command detection.
     Changes:        30.09.2025 Added automatic unlock for Internet files.
     Changes:        27.01.2026 Fixed MSI Rule detection and some other fixes
+    Changes:        13.02.2026 Fixed Installer detection
     Issues: 	Still having issues with the description, there is an issue with Special characters.
                 Only Az:Storage version 9.4.0 and earlier is working so far. 
 
@@ -98,7 +99,7 @@
 
 param (
     [Parameter(Mandatory = $false)]
-    [string]$SourceDir = "\\srvHAMMECM01.ham.all4l.com\PKGSERVER\Learnpulse_Screenpresso_PRO_License_9_25_MUI",
+    [string]$SourceDir = "C:\Temp\Google Chrome Enterprise_145.0.7632.68_MUI",
 
     [Parameter(Mandatory = $false)]
     [string]$outputDir="C:\Intunewin\Output",
@@ -871,8 +872,8 @@ try {
     }
     
     #Get the commands for Install and uninstall
-    $InstallCmd = (Get-ChildItem -Path $sourceDir -Recurse -Depth 1 -File -Include "Install*.cmd","Install*.bat").Name
-    $UninstallCmd = (Get-ChildItem -Path $sourceDir -Recurse -Depth 1 -File -Include "Uninstall*.cmd","Uninstall*.bat").Name
+    $InstallCmd = (Get-ChildItem -Path $sourceDir -Recurse -Depth 1 -File -Include "Install*.cmd","Install*.bat" | Select-Object -First 1).Name
+    $UninstallCmd = (Get-ChildItem -Path $sourceDir -Recurse -Depth 1 -File -Include "Uninstall*.cmd","Uninstall*.bat" | Select-Object -First 1).Name
 
     # Create Output directory silently
     if (-not (Test-Path -Path $outputDir)) {
