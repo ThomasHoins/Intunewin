@@ -8,7 +8,7 @@
     If the IntuneWinAppUtil.exe file is not found, it will be automatically downloaded from the official Microsoft repository.
 
 .NOTES
-    Version:        2.8.4
+    Version:        2.8.5
     Author:         Thomas Hoins (DATAGROUP OIT)
     Initial Date:   14.01.2025
     Changes:        14.01.2025 Added error handling, clean outputs, and timestamp-based renaming.
