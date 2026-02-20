@@ -35,6 +35,8 @@
     Changes:        30.09.2025 Added automatic unlock for Internet files.
     Changes:        27.01.2026 Fixed MSI Rule detection and some other fixes
     Changes:        13.02.2026 Fixed Installer detection
+    Changes:        20.02.2026 TEMP and TMP were temporarily redirected during IntuneWinAppUtil.exe execution to mitigate Cynet interference; original environment variables were restored after completion.
+
     Issues: 	Still having issues with the description, there is an issue with Special characters.
                 Only Az:Storage version 9.4.0 and earlier is working so far. 
 
@@ -914,8 +916,19 @@ try {
                 Unblock-File -Path $_.FullName
             }
         }
+        # Create the intunewin
         Write-Host "$intuneWinAppUtil -c $sourceDir -s $installCmd -o $outputDir"
+        $oldTemp = $env:TEMP
+        $oldTmp  = $env:TMP
+        $newTemp = "C:\intunewin\IntuneTemp"
+        if (-not (Test-Path $newTemp)) {
+            New-Item -ItemType Directory -Path $newTemp | Out-Null
+        }
+        $env:TEMP = $newTemp
+        $env:TMP  = $newTemp
         &$intuneWinAppUtil -c $sourceDir -s $installCmd -o $outputDir
+        $env:TEMP = $oldTemp
+        $env:TMP  = $oldTmp
 
         # Move and rename the generated file
         $generatedFile = "$outputDir\Install.intunewin"
