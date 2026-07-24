@@ -8,7 +8,7 @@
     If the IntuneWinAppUtil.exe file is not found, it will be automatically downloaded from the official Microsoft repository.
 
 .NOTES
-    Version:        2.9.2
+    Version:        2.10.2
     Author:         Thomas Hoins (DATAGROUP OIT)
     Initial Date:   14.01.2025
     Changes:        14.01.2025 Added error handling, clean outputs, and timestamp-based renaming.
@@ -39,6 +39,7 @@
     Changes:        07.07.2026 Minor Bug Fixe regarding uninstallation for detection rule.
     Changes:        24.07.2026 Fixed version handling for Intune upload and ensured displayVersion uses dot notation.
     Changes:        24.07.2026 Added `-GenerateGroups` feature: creates Entra security groups from `groupTemplate.json` (install groups default to `available`; uninstall groups omit assignments).
+    Changes:        24.07.2026 Added `-Supersedence` feature: automatically resolves and creates supersedence relationships for existing apps in Intune.
 
     Issues: 	Still having issues with the description, there is an issue with Special characters.
                 Only Az:Storage version 9.4.0 and earlier is working so far. 
