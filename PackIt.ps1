@@ -8,7 +8,7 @@
     If the IntuneWinAppUtil.exe file is not found, it will be automatically downloaded from the official Microsoft repository.
 
 .NOTES
-    Version:        2.8.5
+    Version:        2.9.2
     Author:         Thomas Hoins (DATAGROUP OIT)
     Initial Date:   14.01.2025
     Changes:        14.01.2025 Added error handling, clean outputs, and timestamp-based renaming.
@@ -38,6 +38,7 @@
     Changes:        20.02.2026 TEMP and TMP were temporarily redirected during IntuneWinAppUtil.exe execution to mitigate Cynet interference; original environment variables were restored after completion.
     Changes:        07.07.2026 Minor Bug Fixe regarding uninstallation for detection rule.
     Changes:        24.07.2026 Fixed version handling for Intune upload and ensured displayVersion uses dot notation.
+    Changes:        24.07.2026 Added `-GenerateGroups` feature: creates Entra security groups from `groupTemplate.json` (install groups default to `available`; uninstall groups omit assignments).
 
     Issues: 	Still having issues with the description, there is an issue with Special characters.
                 Only Az:Storage version 9.4.0 and earlier is working so far. 
@@ -103,7 +104,7 @@
 
 param (
     [Parameter(Mandatory = $false)]
-    [string]$SourceDir = "\\srvHAMMECM01.ham.all4l.com\PKGSERVER\Google Chrome Enterprise_149.0.7827.103_MUI",
+    [string]$SourceDir = "C:\Temp\WCK\Tungsten_Printix Client Setup_2025.4.0.108_ENG",
 
     [Parameter(Mandatory = $false)]
     [string]$outputDir="C:\Intunewin\Output",
@@ -119,6 +120,11 @@ param (
 
     [Parameter(Mandatory = $false)]
     [string]$InstallCmd
+    ,
+    [Parameter(Mandatory = $false)]
+    [bool]$GenerateGroups = $true,
+    [Parameter(Mandatory = $false)]
+    [string]$GroupTemplatePath = ""
 )
 # Fix for dropped on folders with spaces
 If ($PSBoundParameters.ContainsKey('SourceDir')){
@@ -126,6 +132,10 @@ If ($PSBoundParameters.ContainsKey('SourceDir')){
     $OutputDir = "C:\Intunewin\Output"}
     $IntunewinDir = "C:\Intunewin"
 If (-Not($OutputDir)){$OutputDir="$(Split-Path ($SourceDir))\Output"}
+
+# Global default application permissions used for Microsoft Graph client-credential flows
+# Only include the permissions actually required for app and group creation.
+$Script:ApplicationPermissions = "Group.ReadWrite.All, DeviceManagementApps.ReadWrite.All"
 
 
 #------------------------ Functions ------------------------
@@ -288,6 +298,109 @@ function Get-IntuneWinFileAndMetadata {
     }
 }
 
+# Load a JSON template file containing group definitions
+function Load-GroupTemplate {
+    param(
+        [Parameter(Mandatory=$true)][string]$Path
+    )
+    if (-not (Test-Path -Path $Path)){
+        throw "Group template not found: $Path"
+    }
+    $raw = Get-Content -Path $Path -Raw -ErrorAction Stop
+    return $raw | ConvertFrom-Json
+}
+
+# Create Azure AD / Entra groups from a template file.
+function New-IntuneGroupsFromTemplate {
+    param(
+        [Parameter(Mandatory=$true)][string]$TemplatePath,
+        [Parameter(Mandatory=$true)][string]$AppName,
+        [Parameter(Mandatory=$false)][string]$MobileAppId = ""
+    )
+
+    Write-Host ""
+    Write-Host "==========================================" -ForegroundColor Green
+    Write-Host "Creating and Assigning Groups" -ForegroundColor Green
+    $template = Load-GroupTemplate -Path $TemplatePath
+    $created = @()
+    foreach ($g in $template.groups) {
+        $displayName = ($g.name -replace '\{AppName\}',$AppName)
+        Write-Host "Processing group: $displayName" -ForegroundColor Cyan
+
+        # Check for existing group
+        $filter = "displayName eq '$displayName'"
+        $encoded = [System.Uri]::EscapeDataString($filter)
+        $existsUri = "https://graph.microsoft.com/v1.0/groups?`$filter=$encoded"
+        $exists = Invoke-MgGraphRequest -Method GET -Uri $existsUri -ErrorAction SilentlyContinue
+        if ($exists -and $exists.value -and $exists.value.Count -gt 0){
+            Write-Host "Group already exists: $displayName" -ForegroundColor Yellow
+            $resp = $exists.value[0]
+            $created += $resp
+        }
+        else {
+            $mailNick = ($displayName -replace '\s+','') -replace '[^A-Za-z0-9]',''
+            $body = @{
+                displayName = $displayName
+                description = $g.description
+                mailEnabled = $g.mailEnabled
+                mailNickname = $mailNick
+                securityEnabled = $g.securityEnabled
+                groupTypes = $g.groupTypes
+            }
+
+            try{
+                $resp = Invoke-MgGraphRequest -Method POST -Uri 'https://graph.microsoft.com/v1.0/groups' -Body ($body | ConvertTo-Json -Depth 5) -ContentType 'application/json'
+                Write-Host "Created group $displayName (id: $($resp.id))" -ForegroundColor Green
+                $created += $resp
+            }
+            catch{
+                Write-Host "Failed to create group $($displayName): $($_.Exception.Message)" -ForegroundColor Red
+                continue
+            }
+        }
+
+        # If a MobileAppId is supplied and the template defines an assignment intent for this group, create it
+        if ($resp -and -not [string]::IsNullOrEmpty($MobileAppId) -and $g.intent) {
+            $intent = $g.intent
+            $assignBody = @{
+                "@odata.type" = "#microsoft.graph.mobileAppAssignment"
+                intent = $intent
+                target = @{
+                    "@odata.type" = "#microsoft.graph.groupAssignmentTarget"
+                    groupId = $resp.id
+                }
+                settings = @{
+                    "@odata.type" = "#microsoft.graph.win32LobAppAssignmentSettings"
+                    notifications = "showReboot"
+                    restartSettings = $null
+                    installTimeSettings = $null
+                    deliveryOptimizationPriority = "foreground"
+                    autoUpdateSettings = $null
+                }
+            }
+            try{
+                $assignResp = Invoke-MgGraphRequest -Method POST -Uri "https://graph.microsoft.com/beta/deviceAppManagement/mobileApps/$MobileAppId/assignments" -Body ($assignBody | ConvertTo-Json -Depth 5) -ContentType 'application/json'
+                Write-Host "Created assignment for group $displayName (intent: $intent)" -ForegroundColor Green
+            }
+            catch{
+                Write-Host "Failed to create assignment for $($displayName): $($_.Exception.Message)" -ForegroundColor Red
+            }
+        }
+
+        # Note assignment handling is left as informational for now; actual Intune assignment wiring can be added later
+        if ($g.intent){
+            Write-Host "Assignment requested for $($displayName): $($g.intent)" -ForegroundColor Cyan
+        }
+    }
+    Write-Host ""
+    Write-Host "==========================================" -ForegroundColor Green
+    Write-Host "Intune Group generated successfully!" -ForegroundColor Green
+    write-host "Group ID: $resp.id" -ForegroundColor Green
+    Write-Host "Name: $displayName" -ForegroundColor Green
+    Write-Host "==========================================" -ForegroundColor Green
+    return $created
+}
+
 function New-IntuneWin32App {
     [CmdletBinding()]
     param (
@@ -319,7 +432,8 @@ function New-IntuneWin32App {
     # Connect to Microsoft Graph Using the Tenant ID and Client Secret Credential
     Write-Host "Connecting to Microsoft Graph..." -ForegroundColor Yellow
     $null = Disconnect-MgGraph -ErrorAction SilentlyContinue
-    Connect-Intune -SecretFile "$PSScriptRoot\appreg-intune-CreateIntuneApp-Script-ReadWrite-Prod.json" -AppName "appreg-intune-CreateIntuneApp-Script-ReadWrite" -ApplicationPermissions "DeviceManagementApps.ReadWrite.All" -Scopes "Application.ReadWrite.All"
+    # Connect with permissions required for Intune app creation and group management (uses global `$Script:ApplicationPermissions`)
+    Connect-Intune -SecretFile "$PSScriptRoot\appreg-intune-CreateIntuneApp-Script-ReadWrite-Prod.json" -AppName "appreg-intune-CreateIntuneApp-Script-ReadWrite" -ApplicationPermissions $Script:ApplicationPermissions -Scopes "Application.ReadWrite.All"
 
     # Get the Metadata from the install.bat
     $installCmd = $script:installCmd 
@@ -651,6 +765,8 @@ function New-IntuneWin32App {
         Exit 1
     }
     Write-Host "App successfully committed!" -ForegroundColor Green
+    Write-Host "==========================================" -ForegroundColor Green
+    Write-Host ""
 
     #Fix Version and Description
     $displayversionBody = @{
@@ -674,6 +790,22 @@ function New-IntuneWin32App {
     Write-Host "Name: $displayName" -ForegroundColor Green
     Write-Host "Version: $version" -ForegroundColor Green
     Write-Host "==========================================" -ForegroundColor Green
+
+
+    # Optionally generate security groups from template
+    if (($script:GenerateGroups -eq $true) -or ($GenerateGroups -eq $true)){
+        $tplPath = $script:GroupTemplatePath
+        if ([string]::IsNullOrEmpty($tplPath)) { $tplPath = Join-Path $PSScriptRoot 'groupTemplate.json' }
+        try{
+            $created = New-IntuneGroupsFromTemplate -TemplatePath $tplPath -AppName $displayName -MobileAppId $MobileAppID
+            if ($created -and $created.Count -gt 0){
+                $names = ($created | ForEach-Object { $_.displayName }) -join ', '
+            }
+        }
+        catch{
+            Write-Host "Group generation failed: $($_.Exception.Message)" -ForegroundColor Red
+        }
+    }
 }
 
 function Connect-Intune{
@@ -685,8 +817,10 @@ function Connect-Intune{
         [string]$Scopes = "Application.ReadWrite.OwnedBy",
         [Parameter(Mandatory = $false)]
         [string]$AppName = "appreg-inune-BootMediaBuilder-Script-ReadWrite",
-		[Parameter(Mandatory = $false)]
-		[string[]]$ApplicationPermissions = "DeviceManagementServiceConfig.ReadWrite.All, Organization.Read.All",
+        [Parameter(Mandatory = $false)]
+        # Required Application permissions (when using client credential flow).
+        # If not provided, the script-scoped default `$Script:ApplicationPermissions` is used.
+        [string[]]$ApplicationPermissions = $null,
 		[Parameter(Mandatory = $false)]
 		[string[]]$DelegationPermissions = ""
 
@@ -704,18 +838,19 @@ function Connect-Intune{
 		$null = Connect-MgGraph -TenantId $TenantID -ClientSecretCredential $ClientSecretCredential -NoWelcome
 
     	#Test if Permissions are correct
-		$actscopes = (Get-MgContext | Select-Object -ExpandProperty Scopes).Split(" ")
-		$IncorrectScopes = ""
+        if (-not $ApplicationPermissions) { $ApplicationPermissions = $Script:ApplicationPermissions }
+        $actscopes = (Get-MgContext | Select-Object -ExpandProperty Scopes).Split(" ")
+		$IncorrectScopes = @()
 		$AppPerms = $ApplicationPermissions.Split(",").Trim()
 		foreach ($AppPerm in $AppPerms) {
 			if ($actscopes -notcontains $AppPerm) {
-				$IncorrectScopes += $AppPerm -join ","
+				$IncorrectScopes += $AppPerm
 			}
 		}
-		if ($IncorrectScopes) {
+		if ($IncorrectScopes.Count -gt 0) {
 			Write-Host "==========================================" -ForegroundColor Red
 			Write-Host " The following permissions are missing:" -ForegroundColor Red
-			Write-Host " $IncorrectScopes" -ForegroundColor Green
+			Write-Host " $($IncorrectScopes -join ', ')" -ForegroundColor Red
 			Write-Host " Make sure to grant admin consent to your " -ForegroundColor Red
 			Write-Host " API permissions in your newly created " -ForegroundColor Red
 			Write-Host " App registration !!! " -ForegroundColor Red

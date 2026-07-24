@@ -11,6 +11,8 @@ It automatically generates an App in Intune, with Icon, Detection Rule and relev
 - Supports drag-and-drop functionality for easy folder selection.
 - Displays the full path of the generated `.intunewin` file upon success.
 - If the parameter `-Upload` is set to `$true` (Default) it generates a Application in Intune.
+ - If the parameter `-Upload` is set to `$true` (Default) it generates a Application in Intune.
+ - New: `-GenerateGroups` option — automatically create Entra (Azure AD) security groups from a JSON template (`groupTemplate.json`) for install/uninstall workflows. Install groups default to an `available` assignment; uninstall groups are created without assignments.
 - The Install.bat file is used as information source for the Metadata for Intune. Use the REM lines
   |Install.Bat       | Intune          |
   |------------------|-----------------|
@@ -47,6 +49,27 @@ It automatically generates an App in Intune, with Icon, Detection Rule and relev
 
    ```powershell
    .\PackageIntune.ps1 -SourceDir "C:\Path\To\Your\Folder"
+
+### Generating Security Groups
+
+You can ask the script to create Entra security groups based on the included `groupTemplate.json` by passing `-GenerateGroups`.
+
+Example (create groups using the default template in the script folder):
+
+```powershell
+.\PackageIntune.ps1 -SourceDir "C:\Path\To\Your\Folder" -GenerateGroups:$true
+```
+
+If you want to use a different template file, supply `-GroupTemplatePath` with the path to your JSON file:
+
+```powershell
+.\PackageIntune.ps1 -SourceDir "C:\Path\To\Your\Folder" -GenerateGroups:$true -GroupTemplatePath "C:\path\to\myTemplate.json"
+```
+
+Notes about the template:
+- The default template file is `groupTemplate.json` in the repository root.
+- Install groups may include an `assignment` object (e.g. `{"type": "available"}`) — the script currently only creates groups; assignment wiring to the Intune app can be enabled later.
+- Uninstall groups are created without assignments by default.
    ```
 
 ## Script Output
@@ -77,6 +100,11 @@ C:\Path\To\Output\YourFolderName.intunewin
 
 - Ensure that the `Install.bat` file exists in the source folder, as it is required by `IntuneWinAppUtil.exe`.
 - The script automatically creates an `Output` directory in the same location as the script if it does not already exist.
+ 
+Additional Notes:
+- `-GenerateGroups` requires the account used to connect to Microsoft Graph to have permissions to create groups (Application permission `Group.ReadWrite.All` or equivalent delegated rights).
+- The script will skip creating a group if a group with the same display name already exists.
+ - If a group entry in the template contains an `assignment` object and you enable `-GenerateGroups`, the script will automatically create the corresponding app assignment in Intune for install groups. Uninstall groups (template `purpose` = `uninstall`) are created without assignments.
 
 ## Troubleshooting
 

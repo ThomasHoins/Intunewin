@@ -1,0 +1,24 @@
+{
+  "groups": [
+    {
+      "name": "UG-INAPP-Install-{AppName}",
+      "description": "Install security group for {AppName}",
+      "mailEnabled": false,
+      "securityEnabled": true,
+      "groupTypes": [],
+      "owners": [],
+      "members": [],
+      "intent": "available"
+    },
+    {
+      "name": "UG-INAPP-Uninstall-{AppName}",
+      "description": "Uninstall security group for {AppName}",
+      "mailEnabled": false,
+      "securityEnabled": true,
+      "groupTypes": [],
+      "owners": [],
+      "members": [],
+      "intent": "uninstall"
+    }
+  ]
+}
