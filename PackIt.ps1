@@ -36,6 +36,8 @@
     Changes:        27.01.2026 Fixed MSI Rule detection and some other fixes
     Changes:        13.02.2026 Fixed Installer detection
     Changes:        20.02.2026 TEMP and TMP were temporarily redirected during IntuneWinAppUtil.exe execution to mitigate Cynet interference; original environment variables were restored after completion.
+    Changes:        07.07.2026 Minor Bug Fixe regarding uninstallation for detection rule.
+    Changes:        24.07.2026 Fixed version handling for Intune upload and ensured displayVersion uses dot notation.
 
     Issues: 	Still having issues with the description, there is an issue with Special characters.
                 Only Az:Storage version 9.4.0 and earlier is working so far. 
@@ -101,7 +103,7 @@
 
 param (
     [Parameter(Mandatory = $false)]
-    [string]$SourceDir = "C:\Temp\Google Chrome Enterprise_145.0.7632.68_MUI",
+    [string]$SourceDir = "\\srvHAMMECM01.ham.all4l.com\PKGSERVER\Google Chrome Enterprise_149.0.7827.103_MUI",
 
     [Parameter(Mandatory = $false)]
     [string]$outputDir="C:\Intunewin\Output",
@@ -425,13 +427,15 @@ function New-IntuneWin32App {
                             $path= (Split-Path -Path $filePath -Parent)
                             $fileOrFolderName= (Split-Path -Path $filePath -Leaf)
                             $version = (Get-Item $filePath).VersionInfo.FileVersion
+                            Write-Host "Removing Application..." -ForegroundColor Yellow
+                            $null = Start-Process -FilePath "$SourceDir\$uninstallCmd" -Wait -passthru -Verb RunAs -ErrorAction SilentlyContinue
                         }
-                        Write-Host "Removing Application..." -ForegroundColor Yellow
-                        $null = Start-Process -FilePath "$SourceDir\$uninstallCmd" -Wait -passthru -Verb RunAs -ErrorAction SilentlyContinue
                         Else{
                             Write-Host "No file path could be found. Please Update the Detection Rule manually!" -ForegroundColor Red
                             $BoxColor = "Red"
                         }
+                        Write-Host "Removing Application..." -ForegroundColor Yellow
+                        $null = Start-Process -FilePath "$SourceDir\$uninstallCmd" -Wait -passthru -Verb RunAs -ErrorAction SilentlyContinue
                     }
                 }
             }
@@ -444,7 +448,7 @@ function New-IntuneWin32App {
                 "check32BitOn64System"= $true
                 "operationType"= "version"
                 "operator"= "greaterThanOrEqual"
-                "comparisonValue"= $version
+                "comparisonValue"= [string]$version
             }
 
         }
@@ -458,7 +462,7 @@ function New-IntuneWin32App {
 
             foreach ($path in $registryPaths) {
                 $apps = Get-ChildItem -Path $path | Get-ItemProperty | Where-Object { 
-                    $_.DisplayName -like $displayName -and $_.DisplayVersion -eq $version 
+                    $_.DisplayName -like $displayName -and ($_.DisplayVersion -replace ',', '.') -eq $version 
                 }
                 if ($apps) {
                     $found = $true
@@ -471,7 +475,7 @@ function New-IntuneWin32App {
                         "valueName"= "DisplayVersion"
                         "operationType"= "version"
                         "operator"= "greaterThanOrEqual"
-                        "comparisonValue"= $version
+                        "comparisonValue"= [string]$version
                     }
                 }
             }
@@ -651,7 +655,7 @@ function New-IntuneWin32App {
     #Fix Version and Description
     $displayversionBody = @{
         "@odata.type" = "#microsoft.graph.win32LobApp"
-        displayVersion = $version
+        displayVersion = [string]$version
    }
    $fileUri = "https://graph.microsoft.com/beta/deviceAppManagement/mobileApps/$MobileAppID"
    Try{
