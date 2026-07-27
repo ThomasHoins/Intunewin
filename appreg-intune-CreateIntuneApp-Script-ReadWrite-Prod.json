@@ -1,0 +1,15 @@
+{
+  "Comment1": "Make sure to keep this secret safe. This secret can be used to connect to your tenant!",
+  "Comment2": "The following permissions are granted with this secret:",
+  "ApplicationPermissions": [
+    "Group.ReadWrite.All, DeviceManagementApps.ReadWrite.All"
+  ],
+  "DelegationPermissions": [
+    ""
+  ],
+  "AppName": "appreg-intune-CreateIntuneApp-Script-ReadWrite",
+  "CreatedBy": "ADM-Thomas.Hoins@v1ksw.onmicrosoft.com",
+  "TenantID": "22c3b957-8768-4139-8b5e-279747e3ecbf",
+  "AppID": "055c9ef2-b477-4bfc-8bc5-e774c8c803fa",
+  "AppSecret": "B_T8Q~8iuCs_OlyqxCTiVob21akyngJQ-N5fjcwg"
+}
