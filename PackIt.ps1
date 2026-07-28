@@ -8,7 +8,7 @@
     If the IntuneWinAppUtil.exe file is not found, it will be automatically downloaded from the official Microsoft repository.
 
 .NOTES
-    Version:        2.9.2
+    Version:        2.10.2
     Author:         Thomas Hoins (DATAGROUP OIT)
     Initial Date:   14.01.2025
     Changes:        14.01.2025 Added error handling, clean outputs, and timestamp-based renaming.
@@ -39,9 +39,9 @@
     Changes:        07.07.2026 Minor Bug Fixe regarding uninstallation for detection rule.
     Changes:        24.07.2026 Fixed version handling for Intune upload and ensured displayVersion uses dot notation.
     Changes:        24.07.2026 Added `-GenerateGroups` feature: creates Entra security groups from `groupTemplate.json` (install groups default to `available`; uninstall groups omit assignments).
+    Changes:        24.07.2026 Added `-Supersedence` feature: automatically resolves and creates supersedence relationships for existing apps in Intune.
 
     Issues: 	Still having issues with the description, there is an issue with Special characters.
-                Only Az:Storage version 9.4.0 and earlier is working so far. 
 
     
 
@@ -104,7 +104,7 @@
 
 param (
     [Parameter(Mandatory = $false)]
-    [string]$SourceDir = "C:\Temp\WCK\Tungsten_Printix Client Setup_2025.4.0.108_ENG",
+    [string]$SourceDir = "C:\Temp\A4L\Don Ho_Notepad++_8.9.1_MUI",
 
     [Parameter(Mandatory = $false)]
     [string]$outputDir="C:\Intunewin\Output",
@@ -119,13 +119,21 @@ param (
     [string]$IconName, 
 
     [Parameter(Mandatory = $false)]
-    [string]$InstallCmd
-    ,
+    [string]$InstallCmd,
+
     [Parameter(Mandatory = $false)]
-    [bool]$GenerateGroups = $true,
+    [bool]$GenerateGroups = $false,
+
     [Parameter(Mandatory = $false)]
-    [string]$GroupTemplatePath = ""
-)
+    [string]$GroupTemplatePath = "",
+
+    [Parameter(Mandatory = $false)]
+    [bool]$Supersedence = $false,
+
+    [Parameter(Mandatory = $false)]
+    [string]$SupersedenceTargetAppId = ""
+    )
+
 # Fix for dropped on folders with spaces
 If ($PSBoundParameters.ContainsKey('SourceDir')){
     $SourceDir = [string]$MyInvocation.BoundParameters.Values
@@ -315,9 +323,9 @@ function New-IntuneGroupsFromTemplate {
     param(
         [Parameter(Mandatory=$true)][string]$TemplatePath,
         [Parameter(Mandatory=$true)][string]$AppName,
-        [Parameter(Mandatory=$false)][string]$MobileAppId = ""
+        [Parameter(Mandatory=$false)][string]$MobileAppId = "",
+        [Parameter(Mandatory=$false)][string]$Supersedence = $false
     )
-
     Write-Host ""
     Write-Host "==========================================" -ForegroundColor Green
     Write-Host "Creating and Assigning Groups" -ForegroundColor Green
@@ -325,9 +333,6 @@ function New-IntuneGroupsFromTemplate {
     $created = @()
     foreach ($g in $template.groups) {
         $displayName = ($g.name -replace '\{AppName\}',$AppName)
-        Write-Host "Processing group: $displayName" -ForegroundColor Cyan
-
-        # Check for existing group
         $filter = "displayName eq '$displayName'"
         $encoded = [System.Uri]::EscapeDataString($filter)
         $existsUri = "https://graph.microsoft.com/v1.0/groups?`$filter=$encoded"
@@ -359,6 +364,15 @@ function New-IntuneGroupsFromTemplate {
             }
         }
 
+        if ($supersedence -eq $true -and $g.intent -eq "available") {
+            $autoUpdateSettings = @{
+                autoUpdateSupersededAppsState = "enabled"
+                }
+        }
+        else{
+            $autoUpdateSettings = $null
+        }
+ 
         # If a MobileAppId is supplied and the template defines an assignment intent for this group, create it
         if ($resp -and -not [string]::IsNullOrEmpty($MobileAppId) -and $g.intent) {
             $intent = $g.intent
@@ -375,7 +389,7 @@ function New-IntuneGroupsFromTemplate {
                     restartSettings = $null
                     installTimeSettings = $null
                     deliveryOptimizationPriority = "foreground"
-                    autoUpdateSettings = $null
+                    autoUpdateSettings = $autoUpdateSettings
                 }
             }
             try{
@@ -389,17 +403,105 @@ function New-IntuneGroupsFromTemplate {
 
         # Note assignment handling is left as informational for now; actual Intune assignment wiring can be added later
         if ($g.intent){
-            Write-Host "Assignment requested for $($displayName): $($g.intent)" -ForegroundColor Cyan
+            Write-Host "Assignment requested for $($displayName): $($g.intent)" -ForegroundColor Green
         }
     }
-    Write-Host ""
-    Write-Host "==========================================" -ForegroundColor Green
-    Write-Host "Intune Group generated successfully!" -ForegroundColor Green
-    write-host "Group ID: $resp.id" -ForegroundColor Green
-    Write-Host "Name: $displayName" -ForegroundColor Green
     Write-Host "==========================================" -ForegroundColor Green
     return $created
 }
+
+function Convert-VersionToSortKey {
+    param(
+        [Parameter(Mandatory=$true)][string]$Version
+    )
+    $parts = ($Version -split '[^0-9]+' | Where-Object { $_ -ne '' } | ForEach-Object { [int]$_ })
+    if (-not $parts) { return "" }
+    return ($parts | ForEach-Object { $_.ToString('D10') }) -join '.'
+}
+
+function Resolve-IntuneSupersedenceTargetAppId {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory=$true)][string]$DisplayName,
+        [Parameter(Mandatory=$true)][string]$Publisher,
+        [Parameter(Mandatory=$true)][string]$CurrentAppId,
+        [Parameter(Mandatory=$true)][string]$CurrentVersion
+    )
+    Write-Host ""
+    Write-Host "==========================================" -ForegroundColor Green
+    Write-Host "Starting supersedence resolution for '$DisplayName' version '$CurrentVersion' with publisher '$Publisher'" -ForegroundColor Green
+
+    $encodedDisplayName = [System.Uri]::EscapeDataString($DisplayName)
+    $filter = "contains(displayName,'$encodedDisplayName')"
+    if (-not [string]::IsNullOrEmpty($Publisher)) {
+        $encodedPublisher = [System.Uri]::EscapeDataString($Publisher)
+        $filter += "and contains(publisher,'$encodedPublisher')"
+    }
+
+    $apps = @()
+    $publisherSearchHadResults = $false
+
+    $uri = "https://graph.microsoft.com/beta/deviceAppManagement/mobileApps?`$filter=$filter`&`$top=10"
+
+    try {
+        $response = Invoke-MgGraphRequest -Method GET -Uri $uri -ErrorAction Stop
+    }
+    catch {
+        Write-Host "Failed to query apps for supersedence resolution: $($_.Exception.Message)" -ForegroundColor Red
+        return $null
+    }
+
+    $apps = $response.value 
+
+    $currentSortKey = Convert-VersionToSortKey -Version $CurrentVersion
+    $candidate = $apps | Where-Object { $_.id -ne $CurrentAppId -and $_.displayVersion } | Sort-Object {[version]$_.displayVersion} -Descending | Select-Object -First 1
+    if (-not $candidate) {
+        Write-Host "No candidate apps with displayVersion found." -ForegroundColor Yellow
+        return $null
+    }
+
+    Write-Host "Selected app for supersedence: $($candidate.DisplayName) $($candidate.DisplayVersion) $($candidate.id)" -ForegroundColor Green
+  
+    return $candidate.id
+}
+
+
+function New-IntuneMobileAppSupersedence {
+    param(
+        [Parameter(Mandatory)]
+        [string]$SourceAppId,     # Die neue App (ersetzt andere)
+
+        [Parameter(Mandatory)]
+        [string]$TargetAppId      # Die alte App (wird ersetzt)
+    )
+
+    # Graph Endpoint
+    $uri = "https://graph.microsoft.com/beta/deviceAppManagement/mobileApps/$SourceAppId/updateRelationships"
+
+    # JSON Payload
+    $body = @{
+    relationships = @(
+        @{
+            '@odata.type' = "#microsoft.graph.mobileAppSupersedence"
+            'targetId'    = $TargetAppId
+            'targetType'  = "parent"
+        }
+    )
+    } | ConvertTo-Json -Depth 2
+
+    try {
+        $response =Invoke-MgGraphRequest -Uri $uri -Method POST -ContentType "application/json" -Body $body
+        Write-Host "Supersedence successfuly added: $TargetAppId → $SourceAppId" -ForegroundColor Green
+        Write-Host "==========================================" -ForegroundColor Green
+        return $response
+    }
+    catch {
+        Write-Host "Error Adding the supersedence relationship: $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "==========================================" -ForegroundColor Green
+        throw
+    }
+}
+
 
 function New-IntuneWin32App {
     [CmdletBinding()]
@@ -414,7 +516,19 @@ function New-IntuneWin32App {
         [string]$SourceDir,
 
         [Parameter(Mandatory = $false)]
-        [string]$IconName
+        [string]$IconName,
+
+        [Parameter(Mandatory = $false)]
+        [bool]$Supersedence = $false,
+
+        [Parameter(Mandatory = $false)]
+        [string]$SupersedenceTargetAppId = "",
+
+        [Parameter(Mandatory = $false)]
+        [string]$SupersedenceType = "replace",
+
+        [Parameter(Mandatory = $false)]
+        [string]$SupersedenceTargetType = "child"
     )
 
     # Check if the required modules are installed
@@ -714,8 +828,16 @@ function New-IntuneWin32App {
     # build storage context
     $storageContext = New-AzStorageContext -StorageAccountName $storageAccountName -SasToken $sasToken
 
-    #  do the actual file to Azure Blob Storage
-    $blobUpload = Set-AzStorageBlobContent -File $UploadFile -Container $container -Context $storageContext -Blob $blobPath -Force
+    # suppress progress messages during the upload
+    $oldProgressPreference = $ProgressPreference
+    $ProgressPreference = 'SilentlyContinue'
+    try {
+        $blobUpload = Set-AzStorageBlobContent -File $UploadFile -Container $container -Context $storageContext -Blob $blobPath -Force
+    }
+    finally {
+        $ProgressPreference = $oldProgressPreference
+    }
+
     Write-Host "Upload finished! Details: Name $($blobUpload.Name), ContentType $($blobUpload.ContentType), Length $($blobUpload.Length), LastModified $($blobUpload.LastModified)" -ForegroundColor Green
 
     # Commit the file
@@ -791,13 +913,40 @@ function New-IntuneWin32App {
     Write-Host "Version: $version" -ForegroundColor Green
     Write-Host "==========================================" -ForegroundColor Green
 
+    #Optionally generate Supersedence relationships if the Supersedence switch is set
+    $Supersedenceseccess = $false
+    if ($Supersedence) {
+        if (-not [string]::IsNullOrEmpty($SupersedenceTargetAppId)) {
+            Write-Host "Using supplied SupersedenceTargetAppId; skipping lookup." -ForegroundColor Yellow
+        }
+        else {
+            $SupersedenceTargetAppId = Resolve-IntuneSupersedenceTargetAppId -DisplayName $displayName -Publisher $publisher -CurrentAppId $MobileAppID -CurrentVersion $version
+            if ([string]::IsNullOrEmpty($SupersedenceTargetAppId)) {
+                Write-Host "No matching previous app version found for supersedence." -ForegroundColor Yellow
+            }
+        }
+
+        if (-not [string]::IsNullOrEmpty($SupersedenceTargetAppId)) {
+            try {
+                New-IntuneMobileAppSupersedence -SourceAppId $MobileAppID -TargetAppId $SupersedenceTargetAppId
+                $Supersedenceseccess = $true
+            }
+            catch {
+                $Supersedenceseccess = $false
+                Write-Host "Error creating supersedence relationship: $($_.Exception.Message)" -ForegroundColor Red
+            }
+        }
+        else {
+            Write-Host "Supersedence target app ID is empty; skipping creation." -ForegroundColor Yellow
+        }
+    }
 
     # Optionally generate security groups from template
     if (($script:GenerateGroups -eq $true) -or ($GenerateGroups -eq $true)){
         $tplPath = $script:GroupTemplatePath
         if ([string]::IsNullOrEmpty($tplPath)) { $tplPath = Join-Path $PSScriptRoot 'groupTemplate.json' }
         try{
-            $created = New-IntuneGroupsFromTemplate -TemplatePath $tplPath -AppName $displayName -MobileAppId $MobileAppID
+            $created = New-IntuneGroupsFromTemplate -TemplatePath $tplPath -AppName $displayName -MobileAppId $MobileAppID -Supersedence $Supersedenceseccess
             if ($created -and $created.Count -gt 0){
                 $names = ($created | ForEach-Object { $_.displayName }) -join ', '
             }
@@ -867,13 +1016,45 @@ function Connect-Intune{
 	Else{
 		Write-Host "Settings file not found. Creating a new one..." -ForegroundColor Yellow
 
-		Connect-MgGraph -Scopes $Scopes -NoWelcome
+		try {
+			Connect-MgGraph -Scopes $Scopes -NoWelcome -ErrorAction Stop
+		}
+		catch {
+			Write-Host "Unable to authenticate with Microsoft Graph: $($_.Exception.Message)" -ForegroundColor Red
+			if ($_.Exception.Message -match "User canceled authentication|InteractiveBrowserCredential authentication failed|Authentication failed") {
+				$cmd = Get-Command Connect-MgGraph -ErrorAction SilentlyContinue
+				if ($cmd -and $cmd.Parameters.ContainsKey('UseDeviceAuthentication')) {
+					Write-Host "Retrying with device authentication..." -ForegroundColor Yellow
+					try {
+						Connect-MgGraph -Scopes $Scopes -UseDeviceAuthentication -NoWelcome -ErrorAction Stop
+					}
+					catch {
+						Write-Host "Device authentication failed: $($_.Exception.Message)" -ForegroundColor Red
+						Exit 1
+					}
+				}
+				else {
+					Write-Host "Your Microsoft.Graph.Authentication module does not support device authentication." -ForegroundColor Red
+					Write-Host "Please update the module or use a secret file with -SecretFile." -ForegroundColor Yellow
+					Exit 1
+				}
+			}
+			else {
+				Exit 1
+			}
+		}
 
-		$TenantData =Get-MgContext
+		$TenantData = Get-MgContext -ErrorAction Stop
 		$TenantID = $TenantData.TenantId
 
 		#Create a new Application
-		$AppObj = Get-MgApplication -Filter "DisplayName eq '$AppName'"
+		try {
+			$AppObj = Get-MgApplication -Filter "DisplayName eq '$AppName'" -ErrorAction Stop
+		}
+		catch {
+			Write-Host "Failed to query applications in Microsoft Graph: $($_.Exception.Message)" -ForegroundColor Red
+			Exit 1
+		}
 		If ($AppObj){
 			$AppID = $AppObj.AppId
 			Write-Host "App already exists. Updating existing App." -ForegroundColor Yellow
@@ -1001,7 +1182,7 @@ $downloadUrl = "https://github.com/microsoft/Microsoft-Win32-Content-Prep-Tool/r
 $LinkPath = "$PSScriptRoot\PackIt.lnk"
 if (-not (Test-Path -Path $LinkPath)) {
     $TargetFile = "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
-    $Arguments =  "-Executionpolicy Bypass -command ""$PSScriptRoot\PackIt.ps1"""
+    $Arguments =  "-Executionpolicy Bypass -command ""$PSScriptRoot\PackIt.ps1"" -GenerateGroups `$true -Supersedence `$true"
     $Iconpath = "C:\Windows\System32\shell32.dll"
     Create-Shortcut -TargetFile $TargetFile -ShortcutFile $LinkPath -Arguments $Arguments -Iconpath $Iconpath -IconNumber 12 -Workdir $PSScriptRoot -Style 1
 }
@@ -1099,7 +1280,7 @@ Write-Host "==========================================" -ForegroundColor Green
 
 # Upload the generated .intunewin file to Intune and generate a application.
 If ($Upload){
-    New-IntuneWin32App -AppPath $renamedFile -SourceDir $sourceDir -IconName $IconName -Install $Install
+    New-IntuneWin32App -AppPath $renamedFile -SourceDir $sourceDir -IconName $IconName -Install $Install -Supersedence $Supersedence -SupersedenceTargetAppId $SupersedenceTargetAppId -SupersedenceType $SupersedenceType -SupersedenceTargetType $SupersedenceTargetType
 }
 Read-Host "Press Enter to close the window"
 exit 0
