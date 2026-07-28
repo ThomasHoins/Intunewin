@@ -42,7 +42,6 @@
     Changes:        24.07.2026 Added `-Supersedence` feature: automatically resolves and creates supersedence relationships for existing apps in Intune.
 
     Issues: 	Still having issues with the description, there is an issue with Special characters.
-                Only Az:Storage version 9.4.0 and earlier is working so far. 
 
     
 
@@ -123,23 +122,17 @@ param (
     [string]$InstallCmd,
 
     [Parameter(Mandatory = $false)]
-    [bool]$GenerateGroups = $true,
+    [bool]$GenerateGroups = $false,
 
     [Parameter(Mandatory = $false)]
     [string]$GroupTemplatePath = "",
 
     [Parameter(Mandatory = $false)]
-    [bool]$Supersedence = $true,
+    [bool]$Supersedence = $false,
 
     [Parameter(Mandatory = $false)]
-    [string]$SupersedenceTargetAppId = "",
-
-    [Parameter(Mandatory = $false)]
-    [string]$SupersedenceType = "replace",
-
-    [Parameter(Mandatory = $false)]
-    [string]$SupersedenceTargetType = "child"
-)
+    [string]$SupersedenceTargetAppId = ""
+    )
 
 # Fix for dropped on folders with spaces
 If ($PSBoundParameters.ContainsKey('SourceDir')){
@@ -330,9 +323,9 @@ function New-IntuneGroupsFromTemplate {
     param(
         [Parameter(Mandatory=$true)][string]$TemplatePath,
         [Parameter(Mandatory=$true)][string]$AppName,
-        [Parameter(Mandatory=$false)][string]$MobileAppId = ""
+        [Parameter(Mandatory=$false)][string]$MobileAppId = "",
+        [Parameter(Mandatory=$false)][string]$Supersedence = $false
     )
-
     Write-Host ""
     Write-Host "==========================================" -ForegroundColor Green
     Write-Host "Creating and Assigning Groups" -ForegroundColor Green
@@ -340,9 +333,6 @@ function New-IntuneGroupsFromTemplate {
     $created = @()
     foreach ($g in $template.groups) {
         $displayName = ($g.name -replace '\{AppName\}',$AppName)
-        Write-Host "Processing group: $displayName" -ForegroundColor Cyan
-
-        # Check for existing group
         $filter = "displayName eq '$displayName'"
         $encoded = [System.Uri]::EscapeDataString($filter)
         $existsUri = "https://graph.microsoft.com/v1.0/groups?`$filter=$encoded"
@@ -374,6 +364,15 @@ function New-IntuneGroupsFromTemplate {
             }
         }
 
+        if ($supersedence -eq $true -and $g.intent -eq "available") {
+            $autoUpdateSettings = @{
+                autoUpdateSupersededAppsState = "enabled"
+                }
+        }
+        else{
+            $autoUpdateSettings = $null
+        }
+ 
         # If a MobileAppId is supplied and the template defines an assignment intent for this group, create it
         if ($resp -and -not [string]::IsNullOrEmpty($MobileAppId) -and $g.intent) {
             $intent = $g.intent
@@ -390,7 +389,7 @@ function New-IntuneGroupsFromTemplate {
                     restartSettings = $null
                     installTimeSettings = $null
                     deliveryOptimizationPriority = "foreground"
-                    autoUpdateSettings = $null
+                    autoUpdateSettings = $autoUpdateSettings
                 }
             }
             try{
@@ -404,14 +403,9 @@ function New-IntuneGroupsFromTemplate {
 
         # Note assignment handling is left as informational for now; actual Intune assignment wiring can be added later
         if ($g.intent){
-            Write-Host "Assignment requested for $($displayName): $($g.intent)" -ForegroundColor Cyan
+            Write-Host "Assignment requested for $($displayName): $($g.intent)" -ForegroundColor Green
         }
     }
-    Write-Host ""
-    Write-Host "==========================================" -ForegroundColor Green
-    Write-Host "Intune Group generated successfully!" -ForegroundColor Green
-    write-host "Group ID: $resp.id" -ForegroundColor Green
-    Write-Host "Name: $displayName" -ForegroundColor Green
     Write-Host "==========================================" -ForegroundColor Green
     return $created
 }
@@ -433,8 +427,9 @@ function Resolve-IntuneSupersedenceTargetAppId {
         [Parameter(Mandatory=$true)][string]$CurrentAppId,
         [Parameter(Mandatory=$true)][string]$CurrentVersion
     )
-
-    Write-Host "DEBUG: Starting supersedence resolution for '$DisplayName' version '$CurrentVersion' with publisher '$Publisher'" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "==========================================" -ForegroundColor Green
+    Write-Host "Starting supersedence resolution for '$DisplayName' version '$CurrentVersion' with publisher '$Publisher'" -ForegroundColor Green
 
     $encodedDisplayName = [System.Uri]::EscapeDataString($DisplayName)
     $filter = "contains(displayName,'$encodedDisplayName')"
@@ -446,7 +441,6 @@ function Resolve-IntuneSupersedenceTargetAppId {
     $apps = @()
     $publisherSearchHadResults = $false
 
-    Write-Host "DEBUG: Querying Graph with filter: $filter" -ForegroundColor Cyan
     $uri = "https://graph.microsoft.com/beta/deviceAppManagement/mobileApps?`$filter=$filter`&`$top=10"
 
     try {
@@ -457,22 +451,17 @@ function Resolve-IntuneSupersedenceTargetAppId {
         return $null
     }
 
-    $apps = $response.value # | ConvertFrom-Json
-
-    if (-not $apps) {
-        Write-Host "DEBUG: No apps found for supersedence resolution." -ForegroundColor Yellow
-        return $null
-    }
+    $apps = $response.value 
 
     $currentSortKey = Convert-VersionToSortKey -Version $CurrentVersion
-    Write-Host "DEBUG: Current sort key = $currentSortKey" -ForegroundColor Cyan
     $candidate = $apps | Where-Object { $_.id -ne $CurrentAppId -and $_.displayVersion } | Sort-Object {[version]$_.displayVersion} -Descending | Select-Object -First 1
     if (-not $candidate) {
-        Write-Host "DEBUG: No candidate apps with displayVersion found." -ForegroundColor Yellow
+        Write-Host "No candidate apps with displayVersion found." -ForegroundColor Yellow
         return $null
     }
 
-    Write-Host "DEBUG: Selected app for supersedence: $($candidate.DisplayName) $($candidate.DisplayVersion) $($candidate.id)" -ForegroundColor Cyan
+    Write-Host "Selected app for supersedence: $($candidate.DisplayName) $($candidate.DisplayVersion) $($candidate.id)" -ForegroundColor Green
+  
     return $candidate.id
 }
 
@@ -483,34 +472,32 @@ function New-IntuneMobileAppSupersedence {
         [string]$SourceAppId,     # Die neue App (ersetzt andere)
 
         [Parameter(Mandatory)]
-        [string]$TargetAppId,      # Die alte App (wird ersetzt)
-
-        [Parameter()]
-        [ValidateSet("replace","update")]
-        [string]$SupersedenceType = "replace"     # Supersedence-Typ
-
+        [string]$TargetAppId      # Die alte App (wird ersetzt)
     )
 
     # Graph Endpoint
-    $uri = "https://graph.microsoft.com/v1.0/deviceAppManagement/mobileApps/$SourceAppId/updateRelationships"
+    $uri = "https://graph.microsoft.com/beta/deviceAppManagement/mobileApps/$SourceAppId/updateRelationships"
 
     # JSON Payload
     $body = @{
-            '@odata.type'    = '#microsoft.graph.mobileAppSupersedence'
-            'targetId'       = $TargetAppId
-            'supersedenceType' = 'autoInstall' 
-            } | ConvertTo-Json -Depth 6
-
-    Write-Host "⏳ Setze Supersedence: $TargetAppId → $SourceAppId ($SupersedenceType)"
+    relationships = @(
+        @{
+            '@odata.type' = "#microsoft.graph.mobileAppSupersedence"
+            'targetId'    = $TargetAppId
+            'targetType'  = "parent"
+        }
+    )
+    } | ConvertTo-Json -Depth 2
 
     try {
         $response =Invoke-MgGraphRequest -Uri $uri -Method POST -ContentType "application/json" -Body $body
-        Write-Host "✔ Supersedence erfolgreich gesetzt."
+        Write-Host "Supersedence successfuly added: $TargetAppId → $SourceAppId" -ForegroundColor Green
+        Write-Host "==========================================" -ForegroundColor Green
         return $response
     }
     catch {
-        Write-Host "❌ Fehler beim Setzen der Supersedence:"
-        Write-Host $_.Exception.Message
+        Write-Host "Error Adding the supersedence relationship: $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "==========================================" -ForegroundColor Green
         throw
     }
 }
@@ -926,48 +913,46 @@ function New-IntuneWin32App {
     Write-Host "Version: $version" -ForegroundColor Green
     Write-Host "==========================================" -ForegroundColor Green
 
+    #Optionally generate Supersedence relationships if the Supersedence switch is set
+    $Supersedenceseccess = $false
+    if ($Supersedence) {
+        if (-not [string]::IsNullOrEmpty($SupersedenceTargetAppId)) {
+            Write-Host "Using supplied SupersedenceTargetAppId; skipping lookup." -ForegroundColor Yellow
+        }
+        else {
+            $SupersedenceTargetAppId = Resolve-IntuneSupersedenceTargetAppId -DisplayName $displayName -Publisher $publisher -CurrentAppId $MobileAppID -CurrentVersion $version
+            if ([string]::IsNullOrEmpty($SupersedenceTargetAppId)) {
+                Write-Host "No matching previous app version found for supersedence." -ForegroundColor Yellow
+            }
+        }
+
+        if (-not [string]::IsNullOrEmpty($SupersedenceTargetAppId)) {
+            try {
+                New-IntuneMobileAppSupersedence -SourceAppId $MobileAppID -TargetAppId $SupersedenceTargetAppId
+                $Supersedenceseccess = $true
+            }
+            catch {
+                $Supersedenceseccess = $false
+                Write-Host "Error creating supersedence relationship: $($_.Exception.Message)" -ForegroundColor Red
+            }
+        }
+        else {
+            Write-Host "Supersedence target app ID is empty; skipping creation." -ForegroundColor Yellow
+        }
+    }
 
     # Optionally generate security groups from template
     if (($script:GenerateGroups -eq $true) -or ($GenerateGroups -eq $true)){
         $tplPath = $script:GroupTemplatePath
         if ([string]::IsNullOrEmpty($tplPath)) { $tplPath = Join-Path $PSScriptRoot 'groupTemplate.json' }
         try{
-            $created = New-IntuneGroupsFromTemplate -TemplatePath $tplPath -AppName $displayName -MobileAppId $MobileAppID
+            $created = New-IntuneGroupsFromTemplate -TemplatePath $tplPath -AppName $displayName -MobileAppId $MobileAppID -Supersedence $Supersedenceseccess
             if ($created -and $created.Count -gt 0){
                 $names = ($created | ForEach-Object { $_.displayName }) -join ', '
             }
         }
         catch{
             Write-Host "Group generation failed: $($_.Exception.Message)" -ForegroundColor Red
-        }
-    }
-
-    if ($Supersedence) {
-        if (-not [string]::IsNullOrEmpty($SupersedenceTargetAppId)) {
-            Write-Host "Using supplied SupersedenceTargetAppId; skipping lookup." -ForegroundColor Yellow
-        }
-        else {
-            Write-Host "Resolving supersedence target app by name and publisher..." -ForegroundColor Yellow
-            $SupersedenceTargetAppId = Resolve-IntuneSupersedenceTargetAppId -DisplayName $displayName -Publisher $publisher -CurrentAppId $MobileAppID -CurrentVersion $version
-            if ([string]::IsNullOrEmpty($SupersedenceTargetAppId)) {
-                Write-Host "No matching previous app version found for supersedence." -ForegroundColor Yellow
-            }
-            else {
-                Write-Host "Resolved supersedence target app ID: $SupersedenceTargetAppId" -ForegroundColor Green
-            }
-        }
-
-        if (-not [string]::IsNullOrEmpty($SupersedenceTargetAppId)) {
-            Write-Host "DEBUG: Creating supersedence relationship from source $MobileAppID to target $SupersedenceTargetAppId" -ForegroundColor Cyan
-            try {
-                New-IntuneMobileAppSupersedence -SourceAppId $MobileAppID -TargetAppId $SupersedenceTargetAppId -SupersedenceType $SupersedenceType -TargetType $SupersedenceTargetType
-            }
-            catch {
-                Write-Host "Error creating supersedence relationship: $($_.Exception.Message)" -ForegroundColor Red
-            }
-        }
-        else {
-            Write-Host "DEBUG: Supersedence target app ID is empty; skipping creation." -ForegroundColor Yellow
         }
     }
 }
