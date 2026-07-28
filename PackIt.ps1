@@ -1182,7 +1182,7 @@ $downloadUrl = "https://github.com/microsoft/Microsoft-Win32-Content-Prep-Tool/r
 $LinkPath = "$PSScriptRoot\PackIt.lnk"
 if (-not (Test-Path -Path $LinkPath)) {
     $TargetFile = "C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
-    $Arguments =  "-Executionpolicy Bypass -command ""$PSScriptRoot\PackIt.ps1"""
+    $Arguments =  "-Executionpolicy Bypass -command ""$PSScriptRoot\PackIt.ps1"" -GenerateGroups `$true -Supersedence `$true"
     $Iconpath = "C:\Windows\System32\shell32.dll"
     Create-Shortcut -TargetFile $TargetFile -ShortcutFile $LinkPath -Arguments $Arguments -Iconpath $Iconpath -IconNumber 12 -Workdir $PSScriptRoot -Style 1
 }
