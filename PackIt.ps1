@@ -176,8 +176,7 @@ function Create-DummyFile{
 
         [Parameter(Mandatory = $true)]
         [int]$SizeMB
-
-        )
+    )
     $sizeInBytes = $SizeMB * 1MB
     $randomData = [byte[]]::new($sizeInBytes)
     [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($randomData)
@@ -211,6 +210,7 @@ function Wait-ForFileProcessing {
         $attempts--
     }
     if ($null -eq $file -or $file.uploadState -ne $successState) {
+        Write-Host -ForegroundColor Red $_.Exception.Message
         throw "File request did not complete in the allotted time."
     }
     $file
@@ -393,7 +393,7 @@ function New-IntuneGroupsFromTemplate {
                 }
             }
             try{
-                $assignResp = Invoke-MgGraphRequest -Method POST -Uri "https://graph.microsoft.com/beta/deviceAppManagement/mobileApps/$MobileAppId/assignments" -Body ($assignBody | ConvertTo-Json -Depth 5) -ContentType 'application/json'
+                Invoke-MgGraphRequest -Method POST -Uri "https://graph.microsoft.com/beta/deviceAppManagement/mobileApps/$MobileAppId/assignments" -Body ($assignBody | ConvertTo-Json -Depth 5) -ContentType 'application/json' | Out-Null
                 Write-Host "Created assignment for group $displayName (intent: $intent)" -ForegroundColor Green
             }
             catch{
@@ -406,7 +406,6 @@ function New-IntuneGroupsFromTemplate {
             Write-Host "Assignment requested for $($displayName): $($g.intent)" -ForegroundColor Green
         }
     }
-    Write-Host "==========================================" -ForegroundColor Green
     return $created
 }
 
@@ -439,7 +438,6 @@ function Resolve-IntuneSupersedenceTargetAppId {
     }
 
     $apps = @()
-    $publisherSearchHadResults = $false
 
     $uri = "https://graph.microsoft.com/beta/deviceAppManagement/mobileApps?`$filter=$filter`&`$top=10"
 
@@ -453,7 +451,6 @@ function Resolve-IntuneSupersedenceTargetAppId {
 
     $apps = $response.value 
 
-    $currentSortKey = Convert-VersionToSortKey -Version $CurrentVersion
     $candidate = $apps | Where-Object { $_.id -ne $CurrentAppId -and $_.displayVersion } | Sort-Object {[version]$_.displayVersion} -Descending | Select-Object -First 1
     if (-not $candidate) {
         Write-Host "No candidate apps with displayVersion found." -ForegroundColor Yellow
@@ -758,7 +755,6 @@ function New-IntuneWin32App {
                 @{"returnCode" = 1618;"type" = "retry"}
             )
         }
-        #$MobileAppID = (New-MgBetaDeviceAppManagementMobileApp -BodyParameter $params).Id
         $MobileAppID = (Invoke-MgGraphRequest -Method POST -Uri "https://graph.microsoft.com/beta/deviceAppManagement/mobileApps" -Body (Convertto-Json $params) -ContentType "application/json").id
         if ($MobileAppID ) {
             Write-Host  "App created successfully. App ID: $MobileAppID" -ForegroundColor Green
@@ -946,10 +942,7 @@ function New-IntuneWin32App {
         $tplPath = $script:GroupTemplatePath
         if ([string]::IsNullOrEmpty($tplPath)) { $tplPath = Join-Path $PSScriptRoot 'groupTemplate.json' }
         try{
-            $created = New-IntuneGroupsFromTemplate -TemplatePath $tplPath -AppName $displayName -MobileAppId $MobileAppID -Supersedence $Supersedenceseccess
-            if ($created -and $created.Count -gt 0){
-                $names = ($created | ForEach-Object { $_.displayName }) -join ', '
-            }
+            $null = New-IntuneGroupsFromTemplate -TemplatePath $tplPath -AppName $displayName -MobileAppId $MobileAppID -Supersedence $Supersedenceseccess
         }
         catch{
             Write-Host "Group generation failed: $($_.Exception.Message)" -ForegroundColor Red
