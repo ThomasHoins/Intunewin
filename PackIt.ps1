@@ -107,7 +107,10 @@ param (
     [string]$SourceDir = "C:\Temp\A4L\Don Ho_Notepad++_8.9.1_MUI",
 
     [Parameter(Mandatory = $false)]
-    [string]$outputDir="C:\Intunewin\Output",
+    [string]$outputDir,
+
+    [Parameter(Mandatory = $false)]
+    [string]$IntuneBaseDir = "C:\Intunewin",
 
     [Parameter(Mandatory = $false)]
     [bool]$Upload= $true,  
@@ -134,12 +137,14 @@ param (
     [string]$SupersedenceTargetAppId = ""
     )
 
-# Fix for dropped on folders with spaces
-If ($PSBoundParameters.ContainsKey('SourceDir')){
-    $SourceDir = [string]$MyInvocation.BoundParameters.Values
-    $OutputDir = "C:\Intunewin\Output"}
-    $IntunewinDir = "C:\Intunewin"
-If (-Not($OutputDir)){$OutputDir="$(Split-Path ($SourceDir))\Output"}
+# Normalize the base path and output directory.
+if (-not (Test-Path -Path $IntuneBaseDir)) {
+    New-Item -ItemType Directory -Path $IntuneBaseDir -Force | Out-Null
+}
+
+if (-not $OutputDir) {
+    $OutputDir = Join-Path $IntuneBaseDir 'Output'
+}
 
 # Global default application permissions used for Microsoft Graph client-credential flows
 # Only include the permissions actually required for app and group creation.
@@ -1233,7 +1238,7 @@ try {
         Write-Host "$intuneWinAppUtil -c $sourceDir -s $installCmd -o $outputDir"
         $oldTemp = $env:TEMP
         $oldTmp  = $env:TMP
-        $newTemp = "C:\intunewin\IntuneTemp"
+        $newTemp = Join-Path $IntuneBaseDir 'IntuneTemp'
         if (-not (Test-Path $newTemp)) {
             New-Item -ItemType Directory -Path $newTemp | Out-Null
         }
