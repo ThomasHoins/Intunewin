@@ -8,7 +8,7 @@
     If the IntuneWinAppUtil.exe file is not found, it will be automatically downloaded from the official Microsoft repository.
 
 .NOTES
-    Version:        2.10.2
+    Version:        2.10.3
     Author:         Thomas Hoins (DATAGROUP OIT)
     Initial Date:   14.01.2025
     Changes:        14.01.2025 Added error handling, clean outputs, and timestamp-based renaming.
@@ -92,7 +92,7 @@
     Specifies whether to create Entra security groups from the group template. Default is $true.
 
 .PARAMETER AssignGroups
-    Specifies whether to assign the template groups to the Intune app. Default is $true.
+    Specifies whether to assign the groups matching the names in the group template to the Intune app.
 
 .INPUTS
     Accepts a folder path as input, either via command-line arguments or drag-and-drop.
@@ -346,7 +346,7 @@ function Get-IntuneWinFileAndMetadata {
 }
 
 # Load a JSON template file containing group definitions
-function Load-GroupTemplate {
+function Import-GroupTemplate {
     param(
         [Parameter(Mandatory=$true)][string]$Path
     )
@@ -373,43 +373,54 @@ function New-IntuneGroupsFromTemplate {
     elseif ($AssignGroups) {
         Write-Status -Title -Message "Assigning Existing Groups"
     }
-    $template = Load-GroupTemplate -Path $TemplatePath
+    $template = Import-GroupTemplate -Path $TemplatePath
     $created = @()
     foreach ($g in $template.groups) {
         $resp = $null
         $displayName = ($g.name -replace '\{AppName\}',$AppName)
-        $filter = "displayName eq '$displayName'"
-        $encoded = [System.Uri]::EscapeDataString($filter)
-        $existsUri = "https://graph.microsoft.com/v1.0/groups?`$filter=$encoded"
-        $exists = Invoke-MgGraphRequest -Method GET -Uri $existsUri -ErrorAction SilentlyContinue
-        if ($exists -and $exists.value -and $exists.value.Count -gt 0){
-            Write-Status -Level "Warning" -Message "Group already exists: $displayName"
-            $resp = $exists.value[0]
-            $created += $resp
-        }
-        elseif ($CreateGroups) {
-            $mailNick = ($displayName -replace '\s+','') -replace '[^A-Za-z0-9]',''
-            $body = @{
-                displayName = $displayName
-                description = $g.description
-                mailEnabled = $g.mailEnabled
-                mailNickname = $mailNick
-                securityEnabled = $g.securityEnabled
-                groupTypes = $g.groupTypes
+        if ($CreateGroups -or $AssignGroups) {
+            $filter = "displayName eq '$displayName'"
+            $encoded = [System.Uri]::EscapeDataString($filter)
+            $existsUri = "https://graph.microsoft.com/v1.0/groups?`$filter=$encoded"
+            try {
+                $exists = Invoke-MgGraphRequest -Method GET -Uri $existsUri -ErrorAction Stop
             }
-
-            try{
-                $resp = Invoke-MgGraphRequest -Method POST -Uri 'https://graph.microsoft.com/v1.0/groups' -Body ($body | ConvertTo-Json -Depth 5) -ContentType 'application/json'
-                Write-Status -Level "Info" -Message "Created group $displayName (id: $($resp.id))"
+            catch {
+                Write-Status -Level "Error" -Message "Failed to find group '$displayName'. Group.Read.All is required to resolve groups by name: $($_.Exception.Message)"
+                throw
+            }
+            if ($exists -and $exists.value -and $exists.value.Count -gt 0){
+                Write-Status -Level "Warning" -Message "Group already exists: $displayName"
+                $resp = $exists.value[0]
                 $created += $resp
             }
-            catch{
-                Write-Status -Level "Error" -Message "Failed to create group $($displayName): $($_.Exception.Message)"
+            elseif ($CreateGroups) {
+                $mailNick = ($displayName -replace '\s+','') -replace '[^A-Za-z0-9]',''
+                $body = @{
+                    displayName = $displayName
+                    description = $g.description
+                    mailEnabled = $g.mailEnabled
+                    mailNickname = $mailNick
+                    securityEnabled = $g.securityEnabled
+                    groupTypes = $g.groupTypes
+                }
+
+                try{
+                    $resp = Invoke-MgGraphRequest -Method POST -Uri 'https://graph.microsoft.com/v1.0/groups' -Body ($body | ConvertTo-Json -Depth 5) -ContentType 'application/json'
+                    Write-Status -Level "Info" -Message "Created group $displayName (id: $($resp.id))"
+                    $created += $resp
+                }
+                catch{
+                    Write-Status -Level "Error" -Message "Failed to create group $($displayName): $($_.Exception.Message)"
+                    continue
+                }
+            }
+            elseif ($AssignGroups) {
+                Write-Status -Level "Warning" -Message "Group does not exist and creation is disabled: $displayName"
                 continue
             }
         }
         else {
-            Write-Status -Level "Warning" -Message "Group does not exist and creation is disabled: $displayName"
             continue
         }
 
@@ -512,10 +523,10 @@ function Resolve-IntuneSupersedenceTargetAppId {
 function New-IntuneMobileAppSupersedence {
     param(
         [Parameter(Mandatory)]
-        [string]$SourceAppId,     # Die neue App (ersetzt andere)
+        [string]$SourceAppId,     # The new app that supersedes another app
 
         [Parameter(Mandatory)]
-        [string]$TargetAppId      # Die alte App (wird ersetzt)
+        [string]$TargetAppId      # The old app being superseded
     )
 
     # Graph Endpoint
@@ -593,13 +604,10 @@ function New-IntuneWin32App {
     # Connect to Microsoft Graph Using the Tenant ID and Client Secret Credential
     Write-Status -Level "Info" -Message "Connecting to Microsoft Graph..."
     $null = Disconnect-MgGraph -ErrorAction SilentlyContinue
-    # Group lookup is needed for assignment; write access is only needed for creation.
+    # Resolve groups by name at runtime; do not pre-check Group.Read.All.
     $requiredApplicationPermissions = @("DeviceManagementApps.ReadWrite.All")
     if ($GenerateGroups) {
         $requiredApplicationPermissions += "Group.ReadWrite.All"
-    }
-    elseif ($AssignGroups) {
-        $requiredApplicationPermissions += "Group.Read.All"
     }
     Connect-Intune -SecretFile "$PSScriptRoot\appreg-intune-CreateIntuneApp-Script-ReadWrite-Prod.json" -AppName "appreg-intune-CreateIntuneApp-Script-ReadWrite" -ApplicationPermissions $requiredApplicationPermissions -Scopes "Application.ReadWrite.All"
 
@@ -901,9 +909,6 @@ function New-IntuneWin32App {
             fileDigestAlgorithm = $IntuneWinMetadata.ApplicationInfo.EncryptionInfo.fileDigestAlgorithm
         }
     }
-    # Remove the file from the local storage
-    Remove-Item -Path (Split-Path $UploadFile) -Force -Recurse -ErrorAction SilentlyContinue
-
     $commitFileUri = "https://graph.microsoft.com/beta/deviceAppManagement/mobileApps/$MobileAppID/microsoft.graph.win32LobApp/contentVersions/1/files/$ContentFileId/commit"
     try{
         Invoke-MgGraphRequest -Method POST $commitFileUri -Body ($fileEncryptionInfo |ConvertTo-Json -Depth 10)
@@ -928,14 +933,60 @@ function New-IntuneWin32App {
         }   
     $commitUri ="https://graph.microsoft.com/beta/deviceAppManagement/mobileApps/$MobileAppID"
     try{
-    Invoke-MgGraphRequest -Method PATCH $commitUri -Body ($commitAppBody | ConvertTo-Json) -ContentType 'application/json'
+        Invoke-MgGraphRequest -Method PATCH -Uri $commitUri -Body ($commitAppBody | ConvertTo-Json) -ContentType 'application/json' -ErrorAction Stop
     }   
     catch{
-        Write-Status -Level "Error" -Message "Failed to commit file to App. Status code: $($_.Exception.Message)"
-        Read-Host "Press Enter to close the window"
-        Exit 1
+        $originalFailureReason = $_.Exception.Message
+        $commitFailureReason = $originalFailureReason
+        $errorDetails = $_.ErrorDetails.Message
+        if (-not [string]::IsNullOrWhiteSpace($errorDetails)) {
+            $bodyMatch = [regex]::Match($errorDetails, '(?s)\r?\n\r?\n(?<body>\{.*\})\s*$')
+            $errorBody = if ($bodyMatch.Success) { $bodyMatch.Groups['body'].Value } else { $errorDetails }
+            try {
+                $graphError = $errorBody | ConvertFrom-Json -ErrorAction Stop
+                $graphMessage = $graphError.error.message
+                if (-not [string]::IsNullOrWhiteSpace($graphMessage)) {
+                    try {
+                        $innerGraphError = $graphMessage | ConvertFrom-Json -ErrorAction Stop
+                        if (-not [string]::IsNullOrWhiteSpace($innerGraphError.Message)) {
+                            $commitFailureReason = $innerGraphError.Message
+                        }
+                        else {
+                            $commitFailureReason = $graphMessage
+                        }
+                    }
+                    catch {
+                        $commitFailureReason = $graphMessage
+                    }
+                    if (-not [string]::IsNullOrWhiteSpace($graphError.error.code)) {
+                        $commitFailureReason = "$($graphError.error.code): $commitFailureReason"
+                    }
+                }
+            }
+            catch {
+                $commitFailureReason = $originalFailureReason
+            }
+        }
+        $commitFailureReason = ($commitFailureReason -replace '\s+', ' ').Trim()
+        if ($commitFailureReason.Length -gt 250) {
+            $commitFailureReason = $commitFailureReason.Substring(0, 247) + "..."
+        }
+
+        $deleteUri = "https://graph.microsoft.com/beta/deviceAppManagement/mobileApps/$MobileAppID"
+        try {
+            Invoke-MgGraphRequest -Method DELETE -Uri $deleteUri -ErrorAction Stop
+            Write-Status -Level "Error" -Message "App commit failed: $commitFailureReason The app was deleted."
+        }
+        catch {
+            Write-Status -Level "Error" -Message "App commit failed: $commitFailureReason The app could not be deleted."
+        }
+       Read-Host "Press Enter to close the window"
+       Exit 1
     }
     Write-Status -Level "Info" -Message "App successfully committed!"
+
+    # Keep the extracted upload available until the app commit succeeds, so failed commits can be retried.
+    Remove-Item -Path (Split-Path $UploadFile) -Force -Recurse -ErrorAction SilentlyContinue
 
     #Fix Version and Description
     $displayversionBody = @{
