@@ -8,67 +8,10 @@
     If the IntuneWinAppUtil.exe file is not found, it will be automatically downloaded from the official Microsoft repository.
 
 .NOTES
-    Version:        2.10.3
+    Version:        2.11
     Author:         Thomas Hoins (DATAGROUP OIT)
     Initial Date:   14.01.2025
-    Changes:        14.01.2025 Added error handling, clean outputs, and timestamp-based renaming.
-    Changes:        14.01.2025 Automatic download of IntuneWinAppUtil.exe, auto-exit after 10 seconds.
-    Changes:        15.01.2025 Added support for command-line arguments, improved error handling.
-    Changes:        24.01.2025 Added support for PowerShell 7, added creation of inune app via graph.
-    Changes:        24.01.2025 Added support for Icon detection, added support for Version info.
-    Changes:        25.01.2025 Added notes and owner to the App.
-    Changes:        25.01.2025 Added support for MSI detection.
-    Changes:        26.01.2025 Added some Error handling and improved the output. Updated the documentation.
-    Changes:        26.01.2025 Some more Bug fixes and improvements.
-    Changes:        28.01.2025 Improved the way to connect to MGGraph, added the automatic creation of an App registration
-    Changes:        28.01.2025 Improved the Errorhandling
-    Changes:        07.02.2025 Changed Permissions to minimal
-    Changes:        13.02.2025 Changed the Connect-Intune function to make it more resilient, removed unused code
-    Changes:        14.02.2025 Bug Fixes, we are adding a Dummy File if the intunewin is <9MB
-    Changes:        14.02.2025 Create Shortcut to Drop On
-    Changes:        04.03.2025 Minor Bug Fix
-    Changes:        10.03.2025 Bug Fix icon and Decriptions ar now found in Subfolders.
-    Changes:        05.03.2025 Added the ability to automatically install the App to find the detection rules
-    Changes:        13.03.2025 Changed the way to detect tehe file version, Bug with description fixed, added a wait before closing the window
-    Changes:        08.04.2025 Fixed a Bug, We did not consider already existing Versions and special characters in the install bat are fixed now.
-    Changes:        18.09.2025 Added automatic install and uninstall command detection.
-    Changes:        30.09.2025 Added automatic unlock for Internet files.
-    Changes:        27.01.2026 Fixed MSI Rule detection and some other fixes
-    Changes:        13.02.2026 Fixed Installer detection
-    Changes:        20.02.2026 TEMP and TMP were temporarily redirected during IntuneWinAppUtil.exe execution to mitigate Cynet interference; original environment variables were restored after completion.
-    Changes:        07.07.2026 Minor Bug Fixe regarding uninstallation for detection rule.
-    Changes:        24.07.2026 Fixed version handling for Intune upload and ensured displayVersion uses dot notation.
-    Changes:        24.07.2026 Added `-GenerateGroups` feature: creates Entra security groups from `groupTemplate.json` (install groups default to `available`; uninstall groups omit assignments).
-    Changes:        24.07.2026 Added `-Supersedence` feature: automatically resolves and creates supersedence relationships for existing apps in Intune.
-    Changes:        21.10.2026 Added `-AssignGroups` feature: assigns Entra security groups from `groupTemplate.json` (install groups default to `available`; uninstall groups omit assignments).
-    Changes:        21.10.2026 Refactored Win32 app upload, metadata extraction, detection rule generation, asset loading, and payload construction into focused helper functions.
-    Changes:        21.10.2026 Separated group creation and app assignment controls; existing groups are resolved by display name without a Group.Read.All pre-check.
-    Changes:        21.10.2026 Improved app commit failure handling with concise Graph error details, app cleanup on failure, and preservation of extracted upload data until commit succeeds.
-    Changes:        21.10.2026 Translated remaining German comments and messages to English; updated the script version to 2.10.3.
-
-    Issues: 	Still having issues with the description, there is an issue with Special characters.
-
-    
-
-    https://learn.microsoft.com/en-us/graph/api/intune-apps-win32lobapp-create?view=graph-rest-1.0&tabs=http
-    https://github.com/microsoftgraph/powershell-intune-samples
-    https://github.com/MSEndpointMgr/IntuneWin32App/blob/master/Public/Get-IntuneWin32AppMetaData.ps1
-    https://github.com/microsoftgraph/powershell-intune-samples/blob/master/LOB_Application/Win32_Application_Add.ps1#L852
-    https://ourcloudnetwork.com/how-to-use-invoke-mggraphrequest-with-powershell/
-    https://developer.microsoft.com/en-us/graph/graph-explorer
-    https://www.scriptinglibrary.com/languages/powershell/how-to-upload-files-to-azure-blob-storage-using-powershell-via-the-rest-api/
-    https://github.com/tabs-not-spaces/Intune-App-Deploy/blob/master/tasks/Deploy.Functions.ps1
-    https://learn.microsoft.com/en-us/rest/api/storageservices/put-blob?tabs=microsoft-entra-id
-    https://stackoverflow.com/questions/69031080/using-only-a-sas-token-to-upload-in-powershell
-    https://learn.microsoft.com/en-us/rest/api/storageservices/naming-and-referencing-containers--blobs--and-metadata
-    https://learn.microsoft.com/de-de/troubleshoot/mem/intune/app-management/develop-deliver-working-win32-app-via-intune
-    https://blog.icewolf.ch/archive/2022/12/02/create-azure-ad-app-registration-with-microsoft-graph-powershell
-    https://knowledge-junction.in/2024/05/06/msgraph-create-app-microsoft-entra/
-    https://practical365.com/common-graph-api-errors-powershell/
-    $azCopyUri = "https://aka.ms/downloadazcopy-v10-windows"
-
-    Modules:
-    Required Modules Az.Storage, Microsoft.Graph.Devices.CorporateManagement,Microsoft.Graph.Authentication will be installed if not present.
+    Change history and reference links: see CHANGELOG.md.
 
 .LINK
     [Your Documentation or GitHub Link Here]
@@ -91,6 +34,9 @@
 
 .PARAMETER Upload
     Specifies whether to upload the generated .intunewin file to Intune. Default is $true.  
+
+.PARAMETER UpdateModules
+    Specifies whether to install or update all required modules before uploading. Default is $true.
 
 .PARAMETER GenerateGroups
     Specifies whether to create Entra security groups from the group template. Default is $true.
@@ -115,7 +61,7 @@
 
 param (
     [Parameter(Mandatory = $false)]
-    [string]$SourceDir = "C:\Temp\dotPDN_LLC_Paint.NET_5.1.12_MUI",
+    [string]$SourceDir = "C:\Temp\A4L\dotPDN_LLC_Paint.NET_5.1.13_MUI",
 
     [Parameter(Mandatory = $false)]
     [string]$outputDir,
@@ -125,6 +71,9 @@ param (
 
     [Parameter(Mandatory = $false)]
     [bool]$Upload= $true,  
+
+    [Parameter(Mandatory = $false)]
+    [bool]$UpdateModules = $true,
 
     [Parameter(Mandatory = $false)]
     [bool]$Install= $true,  
@@ -499,8 +448,6 @@ function Resolve-IntuneSupersedenceTargetAppId {
         $filter += "and contains(publisher,'$encodedPublisher')"
     }
 
-    $apps = @()
-
     $uri = "https://graph.microsoft.com/beta/deviceAppManagement/mobileApps?`$filter=$filter`&`$top=10"
 
     try {
@@ -669,7 +616,20 @@ function Get-IntuneWin32AppMetadata {
         $UninstallCommand = "dummy"
     }
 
-    $installCmdString = Get-Content "$SourceDir\$InstallCommand" -Encoding UTF8
+    $installCommandPath = if ([System.IO.Path]::IsPathRooted($InstallCommand)) {
+        $InstallCommand
+    }
+    else {
+        Join-Path -Path $SourceDir -ChildPath $InstallCommand
+    }
+    if (-not (Test-Path -LiteralPath $installCommandPath -PathType Leaf)) {
+        throw "Install command file not found: $installCommandPath"
+    }
+
+    $installCmdString = Get-Content -LiteralPath $installCommandPath -Encoding UTF8
+    if (-not $installCmdString) {
+        throw "Install command file is empty: $installCommandPath"
+    }
     $displayName = ($installCmdString -match "REM DESCRIPTION").Replace("REM DESCRIPTION", "").Trim()
     $publisher = ($installCmdString -match "REM MANUFACTURER").Replace("REM MANUFACTURER", "").Trim()
     if ($installCmdString -match "REM FILENAME") {
@@ -701,7 +661,10 @@ function Get-IntuneWin32AppMetadata {
 function New-IntuneWin32AppDetectionRule {
     [CmdletBinding()]
     param (
-        [Parameter(Mandatory = $true)]
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        [AllowEmptyCollection()]
+        [AllowEmptyString()]
         [string[]]$InstallCommandContent,
 
         [Parameter(Mandatory = $true)]
@@ -726,7 +689,7 @@ function New-IntuneWin32AppDetectionRule {
         [bool]$Install = $true
     )
 
-    if (($InstallCommandContent -match "(?i)msiexec(?:\.exe)?\b.*?\s/i\b").Count -gt 0) {
+    if ($InstallCommandContent -and ($InstallCommandContent -match "(?i)msiexec(?:\.exe)?\b.*?\s/i\b").Count -gt 0) {
         $MSIName = (Get-ChildItem $SourceDir -Filter "*.msi" -Recurse -Depth 1)[0].FullName
         Write-Status -Level "Info" -Message "using MSI detection rule for $MSIName"
         $MSIProductCode = (Get-AppLockerFileInformation $MSIName | Select-Object -ExpandProperty Publisher).BinaryName
@@ -964,6 +927,38 @@ function New-IntuneWin32AppPayload {
     }
 }
 
+function Install-RequiredModules {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $false)]
+        [bool]$UpdateModules = $true
+    )
+
+    $requiredModules = @(
+        'Az.Storage'
+        'Microsoft.Graph.Devices.CorporateManagement'
+        'Microsoft.Graph.Authentication'
+        'Microsoft.Graph.Applications'
+        'Microsoft.Graph.Beta.Devices.CorporateManagement'
+    )
+
+    if ($UpdateModules) {
+        $modulesToInstall = $requiredModules
+        Write-Status -Level "Info" -Message "Installing or updating required modules..."
+    }
+    else {
+        $installedModules = @(Get-Module -Name $requiredModules -ListAvailable | Select-Object -ExpandProperty Name -Unique)
+        $modulesToInstall = @($requiredModules | Where-Object { $installedModules -notcontains $_ })
+        if ($modulesToInstall.Count -eq 0) {
+            Write-Status -Level "Info" -Message "All required modules are already installed."
+            return
+        }
+        Write-Status -Level "Info" -Message "Installing missing required modules..."
+    }
+
+    Install-Module -Name $modulesToInstall -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop
+}
+
 function New-IntuneWin32App {
     [CmdletBinding()]
     param (
@@ -975,6 +970,12 @@ function New-IntuneWin32App {
 
         [Parameter(Mandatory = $true)]
         [string]$SourceDir,
+
+        [Parameter(Mandatory = $true)]
+        [string]$InstallCommand,
+
+        [Parameter(Mandatory = $false)]
+        [string]$UninstallCommand,
 
         [Parameter(Mandatory = $false)]
         [string]$IconName,
@@ -998,18 +999,6 @@ function New-IntuneWin32App {
         [string]$SupersedenceTargetType = "child"
     )
 
-    # Check if the required modules are installed
-    $modules = 'Az.Storage', 'Microsoft.Graph.Devices.CorporateManagement', 'Microsoft.Graph.Authentication', 'Microsoft.Graph.Applications','Microsoft.Graph.Beta.Devices.CorporateManagement'
-    $installed = @((Get-Module $modules -ListAvailable).Name | Select-Object -Unique)
-    $notInstalled = Compare-Object $modules $installed -PassThru
-
-    # At least one module is missing.
-    # Install the missing modules now.
-    if ($notInstalled) { 
-        Write-Status -Level "Info" -Message "Installing required modules..."
-        Install-Module -Scope CurrentUser $notInstalled -Force -AllowClobber
-    }
-
     # Connect to Microsoft Graph Using the Tenant ID and Client Secret Credential
     Write-Status -Level "Info" -Message "Connecting to Microsoft Graph..."
     $null = Disconnect-MgGraph -ErrorAction SilentlyContinue
@@ -1020,7 +1009,7 @@ function New-IntuneWin32App {
     }
     Connect-Intune -SecretFile "$PSScriptRoot\appreg-intune-CreateIntuneApp-Script-ReadWrite-Prod.json" -AppName "appreg-intune-CreateIntuneApp-Script-ReadWrite" -ApplicationPermissions $requiredApplicationPermissions -Scopes "Application.ReadWrite.All"
 
-    $appMetadata = Get-IntuneWin32AppMetadata -AppPath $AppPath -SourceDir $SourceDir -InstallCommand $script:installCmd -UninstallCommand $script:uninstallCmd
+    $appMetadata = Get-IntuneWin32AppMetadata -AppPath $AppPath -SourceDir $SourceDir -InstallCommand $InstallCommand -UninstallCommand $UninstallCommand
     $installCmd = $appMetadata.InstallCommand
     $uninstallCmd = $appMetadata.UninstallCommand
     $installCmdString = $appMetadata.InstallCommandContent
@@ -1263,15 +1252,18 @@ function Connect-Intune{
 					}
 					catch {
 						Write-Status -Level "Error" -Message "Device authentication failed: $($_.Exception.Message)"
+						Read-Host "Press Enter to close the window"
 						Exit 1
 					}
 				}
 				else {
 					Write-Status -Level "Error" -Message "Your Microsoft.Graph.Authentication module does not support device authentication.`nPlease update the module or use a secret file with -SecretFile." -Title
+					Read-Host "Press Enter to close the window"
 					Exit 1
 				}
 			}
 			else {
+				Read-Host "Press Enter to close the window"
 				Exit 1
 			}
 		}
@@ -1285,6 +1277,7 @@ function Connect-Intune{
 		}
 		catch {
 			Write-Status -Level "Error" -Message "Failed to query applications in Microsoft Graph: $($_.Exception.Message)"
+			Read-Host "Press Enter to close the window"
 			Exit 1
 		}
 		If ($AppObj){
@@ -1300,6 +1293,7 @@ function Connect-Intune{
 			}
 			Else{
 				Write-Status -Level "Error" -Message "Failed to create the App. Please check the parameters and try again."
+				Read-Host "Press Enter to close the window"
 				Exit 1  
 			}
 		}
@@ -1348,6 +1342,7 @@ function Connect-Intune{
 		}
 		catch{
 			Write-Status -Level "Error" -Message "Failed to update the Required Resource Access. Status code: $($_.Exception.Message)"
+			Read-Host "Press Enter to close the window"
 			Exit 1
 		}
 
@@ -1415,8 +1410,22 @@ try {
         throw "The provided source directory does not exist: $sourceDir, Drag and drop a folder onto the script."
     }
     
-    #Get the commands for Install and uninstall
-    $InstallCmd = (Get-ChildItem -Path $sourceDir -Recurse -Depth 1 -File -Include "Install*.cmd","Install*.bat" | Select-Object -First 1).Name
+    # Get the commands for Install and uninstall
+    if ([string]::IsNullOrWhiteSpace($InstallCmd)) {
+        $InstallCmd = (Get-ChildItem -Path $sourceDir -Recurse -Depth 1 -File -Include "Install*.cmd","Install*.bat" | Select-Object -First 1).Name
+    }
+    if ([string]::IsNullOrWhiteSpace($InstallCmd)) {
+        throw "No install command file was found in '$sourceDir'. Specify one with -InstallCmd."
+    }
+    $installCommandPath = if ([System.IO.Path]::IsPathRooted($InstallCmd)) {
+        $InstallCmd
+    }
+    else {
+        Join-Path -Path $sourceDir -ChildPath $InstallCmd
+    }
+    if (-not (Test-Path -LiteralPath $installCommandPath -PathType Leaf)) {
+        throw "Install command file not found: $installCommandPath"
+    }
     $UninstallCmd = (Get-ChildItem -Path $sourceDir -Recurse -Depth 1 -File -Include "Uninstall*.cmd","Uninstall*.bat" | Select-Object -First 1).Name
 
     # Create Output directory silently
@@ -1495,7 +1504,15 @@ Write-Status -level Info -Message "intunewin generated successfully!" -Title
 
 # Upload the generated .intunewin file to Intune and generate a application.
 If ($Upload){
-    New-IntuneWin32App -AppPath $renamedFile -SourceDir $sourceDir -IconName $IconName -Install $Install -GenerateGroups $GenerateGroups -AssignGroups $AssignGroups -Supersedence $Supersedence -SupersedenceTargetAppId $SupersedenceTargetAppId -SupersedenceType $SupersedenceType -SupersedenceTargetType $SupersedenceTargetType
+    try {
+        Install-RequiredModules -UpdateModules $UpdateModules -ErrorAction Stop
+        New-IntuneWin32App -AppPath $renamedFile -SourceDir $sourceDir -InstallCommand $InstallCmd -UninstallCommand $UninstallCmd -IconName $IconName -Install $Install -GenerateGroups $GenerateGroups -AssignGroups $AssignGroups -Supersedence $Supersedence -SupersedenceTargetAppId $SupersedenceTargetAppId -SupersedenceType $SupersedenceType -SupersedenceTargetType $SupersedenceTargetType -ErrorAction Stop
+    }
+    catch {
+        Write-Status -Level "Error" -Message "Intune upload failed: $($_.Exception.Message)" -Title
+        Read-Host "Press Enter to close the window"
+        exit 1
+    }
 }
 Read-Host "Press Enter to close the window"
 exit 0
