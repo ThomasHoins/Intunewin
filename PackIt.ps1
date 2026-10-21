@@ -41,6 +41,9 @@
     Changes:        24.07.2026 Added `-GenerateGroups` feature: creates Entra security groups from `groupTemplate.json` (install groups default to `available`; uninstall groups omit assignments).
     Changes:        24.07.2026 Added `-Supersedence` feature: automatically resolves and creates supersedence relationships for existing apps in Intune.
     Changes:        21.10.2026 Added `-AssignGroups` feature: assigns Entra security groups from `groupTemplate.json` (install groups default to `available`; uninstall groups omit assignments).
+    Changes:        21.10.2026 Separated group creation and app assignment controls; existing groups are resolved by display name without a Group.Read.All pre-check.
+    Changes:        21.10.2026 Improved app commit failure handling with concise Graph error details, app cleanup on failure, and preservation of extracted upload data until commit succeeds.
+    Changes:        21.10.2026 Translated remaining German comments and messages to English; updated the script version to 2.10.3.
 
     Issues: 	Still having issues with the description, there is an issue with Special characters.
 
