@@ -41,9 +41,12 @@
     Changes:        24.07.2026 Added `-GenerateGroups` feature: creates Entra security groups from `groupTemplate.json` (install groups default to `available`; uninstall groups omit assignments).
     Changes:        24.07.2026 Added `-Supersedence` feature: automatically resolves and creates supersedence relationships for existing apps in Intune.
     Changes:        21.10.2026 Added `-AssignGroups` feature: assigns Entra security groups from `groupTemplate.json` (install groups default to `available`; uninstall groups omit assignments).
+    Changes:        21.10.2026 Refactored Win32 app upload, metadata extraction, detection rule generation, asset loading, and payload construction into focused helper functions.
     Changes:        21.10.2026 Separated group creation and app assignment controls; existing groups are resolved by display name without a Group.Read.All pre-check.
     Changes:        21.10.2026 Improved app commit failure handling with concise Graph error details, app cleanup on failure, and preservation of extracted upload data until commit succeeds.
     Changes:        21.10.2026 Translated remaining German comments and messages to English; updated the script version to 2.10.3.
+    Changes:        21.10.2026 Allowed detection rule generation to fall back when install command content is unavailable.
+    Changes:        21.10.2026 Passed install and uninstall commands explicitly to the app upload workflow and validated the install script before connecting to Graph.
 
     Issues: 	Still having issues with the description, there is an issue with Special characters.
 
@@ -114,7 +117,7 @@
 
 param (
     [Parameter(Mandatory = $false)]
-    [string]$SourceDir = "C:\Temp\A4L\Don Ho_Notepad++_8.9.1_MUI",
+    [string]$SourceDir = "C:\Temp\A4L\dotPDN_LLC_Paint.NET_5.1.13_MUI",
 
     [Parameter(Mandatory = $false)]
     [string]$outputDir,
@@ -558,6 +561,427 @@ function New-IntuneMobileAppSupersedence {
 }
 
 
+function Publish-IntuneWin32AppContent {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$MobileAppId,
+
+        [Parameter(Mandatory = $true)]
+        [string]$UploadFile,
+
+        [Parameter(Mandatory = $true)]
+        [object]$IntuneWinMetadata
+    )
+
+    $FileName = $IntuneWinMetadata.ApplicationInfo.FileName
+    $Size = [int64]$IntuneWinMetadata.ApplicationInfo.UnencryptedContentSize
+    $EncrySize = (Get-Item "$UploadFile").Length
+    $fileBody = @{
+        "@odata.type" = "#microsoft.graph.mobileAppContentFile"
+        name = $FileName
+        size = $Size
+        sizeEncrypted = $EncrySize
+        manifest = $null
+        isDependency = $false
+    }
+    $fileUri = "https://graph.microsoft.com/beta/deviceAppManagement/mobileApps/$MobileAppId/microsoft.graph.win32LobApp/contentVersions/1/files"
+    try {
+        $file = Invoke-MgGraphRequest -Method POST -Uri $fileUri -Body ($fileBody | ConvertTo-Json)
+        $ContentFileId = $file.id
+    }
+    catch {
+        $file = Invoke-MgGraphRequest -Method Get -Uri $fileUri
+        if ($file.value.isCommitted -eq "True") {
+            Write-Status -Level "Info" -Message "This App is already committed. Please create a new App!"
+            Read-Host "Press Enter to close the window"
+            Exit 0
+        }
+        Write-Status -Level "Info" -Message "App already exists. Using existing App."
+    }
+
+    Write-Status -Level "Info" -Message "Uploading file to Azure Blob Storage..."
+    $fileUri = "https://graph.microsoft.com/beta/deviceAppManagement/mobileApps/$MobileAppId/microsoft.graph.win32LobApp/contentVersions/1/files/$ContentFileId"
+    $file = Wait-ForFileProcessing $fileUri "AzureStorageUriRequest"
+
+    [System.Uri]$uriObject = $file.azureStorageUri
+    $storageAccountName = $uriObject.DnsSafeHost.Split('.')[0]
+    $sasToken = $uriObject.Query.TrimStart('?')
+    $segments = $uriObject.AbsolutePath.TrimStart('/').Split('/')
+    $container = $segments[0]
+    $blobPath = ($segments[1..($segments.Length-1)] -join '/')
+    $storageContext = New-AzStorageContext -StorageAccountName $storageAccountName -SasToken $sasToken
+
+    $oldProgressPreference = $ProgressPreference
+    $ProgressPreference = 'SilentlyContinue'
+    try {
+        $blobUpload = Set-AzStorageBlobContent -File $UploadFile -Container $container -Context $storageContext -Blob $blobPath -Force
+    }
+    finally {
+        $ProgressPreference = $oldProgressPreference
+    }
+
+    Write-Status -Level "Info" -Message "Upload finished! Details: Name $($blobUpload.Name), ContentType $($blobUpload.ContentType), Length $($blobUpload.Length), LastModified $($blobUpload.LastModified)"
+
+    $fileEncryptionInfo = @{
+        fileEncryptionInfo = @{
+            encryptionKey = $IntuneWinMetadata.ApplicationInfo.EncryptionInfo.EncryptionKey
+            macKey = $IntuneWinMetadata.ApplicationInfo.EncryptionInfo.macKey
+            initializationVector = $IntuneWinMetadata.ApplicationInfo.EncryptionInfo.initializationVector
+            mac = $IntuneWinMetadata.ApplicationInfo.EncryptionInfo.mac
+            profileIdentifier = "ProfileVersion1";
+            fileDigest = $IntuneWinMetadata.ApplicationInfo.EncryptionInfo.fileDigest
+            fileDigestAlgorithm = $IntuneWinMetadata.ApplicationInfo.EncryptionInfo.fileDigestAlgorithm
+        }
+    }
+    $commitFileUri = "https://graph.microsoft.com/beta/deviceAppManagement/mobileApps/${MobileAppId}/microsoft.graph.win32LobApp/contentVersions/1/files/$ContentFileId/commit"
+    try {
+        Invoke-MgGraphRequest -Method POST $commitFileUri -Body ($fileEncryptionInfo | ConvertTo-Json -Depth 10)
+    }
+    catch {
+        Write-Status -Level "Error" -Message "Failed to commit file to Azure Blob Storage. Status code: $($_.Exception.Message)"
+        Read-Host "Press Enter to close the window"
+        Exit 1
+    }
+
+    Write-Status -Level "Info" -Message "Waiting for the file to be committed..."
+    $file = Wait-ForFileProcessing $fileUri "commitFile"
+    if ($file.uploadState -ne "commitFileSuccess") {
+        throw "Failed to commit file to Azure Blob Storage. Status code: $($file.uploadState)"
+    }
+}
+
+function Get-IntuneWin32AppMetadata {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$AppPath,
+
+        [Parameter(Mandatory = $true)]
+        [string]$SourceDir,
+
+        [Parameter(Mandatory = $false)]
+        [string]$InstallCommand,
+
+        [Parameter(Mandatory = $false)]
+        [string]$UninstallCommand
+    )
+
+    if ([string]::IsNullOrEmpty($UninstallCommand)) {
+        $UninstallCommand = "dummy"
+    }
+
+    $installCommandPath = if ([System.IO.Path]::IsPathRooted($InstallCommand)) {
+        $InstallCommand
+    }
+    else {
+        Join-Path -Path $SourceDir -ChildPath $InstallCommand
+    }
+    if (-not (Test-Path -LiteralPath $installCommandPath -PathType Leaf)) {
+        throw "Install command file not found: $installCommandPath"
+    }
+
+    $installCmdString = Get-Content -LiteralPath $installCommandPath -Encoding UTF8
+    if (-not $installCmdString) {
+        throw "Install command file is empty: $installCommandPath"
+    }
+    $displayName = ($installCmdString -match "REM DESCRIPTION").Replace("REM DESCRIPTION", "").Trim()
+    $publisher = ($installCmdString -match "REM MANUFACTURER").Replace("REM MANUFACTURER", "").Trim()
+    if ($installCmdString -match "REM FILENAME") {
+        $fileName = ($installCmdString -match "REM FILENAME").Replace("REM FILENAME", "").Trim()
+    }
+    $version = ($installCmdString -match "REM VERSION").Replace("REM VERSION", "").Trim()
+    if ($installCmdString -match "REM OWNER") {
+        $owner = ($installCmdString -match "REM OWNER").Replace("REM OWNER", "").Trim()
+    }
+    if ($installCmdString -match "REM ASSETNUMBER") {
+        $notes = ($installCmdString -match "REM ASSETNUMBER").Replace("REM ASSETNUMBER", "").Trim()
+    }
+
+    $intuneWinData = Get-IntuneWinFileAndMetadata -FilePath $AppPath
+    return [pscustomobject]@{
+        InstallCommand = $InstallCommand
+        UninstallCommand = $UninstallCommand
+        InstallCommandContent = $installCmdString
+        DisplayName = $displayName
+        Publisher = $publisher
+        FileName = $fileName
+        Version = $version
+        Owner = $owner
+        Notes = $notes
+        IntuneWinData = $intuneWinData
+    }
+}
+
+function New-IntuneWin32AppDetectionRule {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $false)]
+        [AllowNull()]
+        [AllowEmptyCollection()]
+        [AllowEmptyString()]
+        [string[]]$InstallCommandContent,
+
+        [Parameter(Mandatory = $true)]
+        [string]$SourceDir,
+
+        [Parameter(Mandatory = $false)]
+        [string]$FileName,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Version,
+
+        [Parameter(Mandatory = $true)]
+        [string]$DisplayName,
+
+        [Parameter(Mandatory = $true)]
+        [string]$InstallCommand,
+
+        [Parameter(Mandatory = $true)]
+        [string]$UninstallCommand,
+
+        [Parameter(Mandatory = $false)]
+        [bool]$Install = $true
+    )
+
+    if ($InstallCommandContent -and ($InstallCommandContent -match "(?i)msiexec(?:\.exe)?\b.*?\s/i\b").Count -gt 0) {
+        $MSIName = (Get-ChildItem $SourceDir -Filter "*.msi" -Recurse -Depth 1)[0].FullName
+        Write-Status -Level "Info" -Message "using MSI detection rule for $MSIName"
+        $MSIProductCode = (Get-AppLockerFileInformation $MSIName | Select-Object -ExpandProperty Publisher).BinaryName
+        $Rule = @{
+            "@odata.type" = "#microsoft.graph.win32LobAppProductCodeRule"
+            ruleType = "detection"
+            productCode = $MSIProductCode
+        }
+    }
+    elseif ($FileName) {
+        Write-Status -Level "Info" -Message "Searching for File Path..."
+        $filePath = (Get-ChildItem -Path "C:\Program*" -Recurse -ErrorAction SilentlyContinue -Include $FileName -Depth 3).FullName
+        if ($filePath) {
+            $path = Split-Path -Path $filePath -Parent
+            $fileOrFolderName = Split-Path -Path $filePath -Leaf
+            $FileVersion = (Get-Item $filePath).VersionInfo.FileVersion
+            if ($FileVersion -ne $Version) {
+                Write-Status -Level "Warning" -Message "File Version ($Version) does not match installed Version ($FileVersion), Please fix this manually! "
+            }
+        }
+        else {
+            Write-Status -Level "Warning" -Message "No file path could be found."
+            if ($Install) {
+                $Answer = (Read-Host -Prompt "Do you want to install the Application...[Y|N]").ToUpper()
+                if ($Answer -eq "Y") {
+                    $null = Start-Process -FilePath "$SourceDir\$InstallCommand" -Wait -passthru -Verb RunAs -ErrorAction SilentlyContinue
+                    $filePath = (Get-ChildItem -Path "C:\Program*" -Recurse -ErrorAction SilentlyContinue -Include $FileName -Depth 3).FullName
+                    if ($filePath) {
+                        $path = Split-Path -Path $filePath -Parent
+                        $fileOrFolderName = Split-Path -Path $filePath -Leaf
+                        $Version = (Get-Item $filePath).VersionInfo.FileVersion
+                        Write-Status -Level "Info" -Message "Removing Application..."
+                        $null = Start-Process -FilePath "$SourceDir\$UninstallCommand" -Wait -passthru -Verb RunAs -ErrorAction SilentlyContinue
+                    }
+                    else {
+                        Write-Status -Level "Error" -Message "No file path could be found. Please Update the Detection Rule manually!"
+                    }
+                    Write-Status -Level "Info" -Message "Removing Application..."
+                    $null = Start-Process -FilePath "$SourceDir\$UninstallCommand" -Wait -passthru -Verb RunAs -ErrorAction SilentlyContinue
+                }
+            }
+        }
+
+        $Rule = @{
+            "@odata.type" = "#microsoft.graph.win32LobAppFileSystemRule"
+            ruleType = "detection"
+            path = $path
+            fileOrFolderName = $fileOrFolderName
+            check32BitOn64System = $true
+            operationType = "version"
+            operator = "greaterThanOrEqual"
+            comparisonValue = [string]$Version
+        }
+    }
+    else {
+        $registryPaths = @(
+            "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
+            "HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall"
+        )
+        $found = $false
+
+        foreach ($path in $registryPaths) {
+            $apps = Get-ChildItem -Path $path | Get-ItemProperty | Where-Object {
+                $_.DisplayName -like $DisplayName -and ($_.DisplayVersion -replace ',', '.') -eq $Version
+            }
+            if ($apps) {
+                $found = $true
+                $RegPath = ($apps.PSPath).Replace("Microsoft.PowerShell.Core\Registry::", "")
+                $Rule = @{
+                    "@odata.type" = "#microsoft.graph.win32LobAppRegistryRule"
+                    ruleType = "detection"
+                    check32BitOn64System = $false
+                    keyPath = $RegPath
+                    valueName = "DisplayVersion"
+                    operationType = "version"
+                    operator = "greaterThanOrEqual"
+                    comparisonValue = [string]$Version
+                }
+            }
+        }
+        if (-not $found) {
+            $Rule = @{
+                "@odata.type" = "#microsoft.graph.win32LobAppFileSystemRule"
+                path = "C:\Program Files\DummyApp\"
+                fileOrFolderName = "DummyApp.exe"
+                check32BitOn64System = $true
+                operationType = "exists"
+            }
+            Write-Status -Level "Error" -Message "No Registry path could be found. Please Update the Detection Rule manually!"
+        }
+    }
+
+    return [pscustomobject]@{
+        Rule = $Rule
+        Version = $Version
+    }
+}
+
+function Get-IntuneWin32AppAssets {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$SourceDir,
+
+        [Parameter(Mandatory = $false)]
+        [string]$IconName
+    )
+
+    if ([string]::IsNullOrEmpty($IconName)) {
+        Write-Status -Level "Info" -Message "Searching for Icon..."
+        $Iconpath = (Get-ChildItem -Path $SourceDir -Include *.png, *.jpg, *jpeg -Recurse -Depth 1 | Select-Object -First 1).FullName
+    }
+    if ($Iconpath -like "*.jpg" -or $Iconpath -like "*.jpeg") {
+        $IconType = "image/jpeg"
+    }
+    elseif ($Iconpath -like "*.png") {
+        $IconType = "image/png"
+    }
+    else {
+        $Iconpath = ""
+    }
+    if ([string]::IsNullOrEmpty($Iconpath)) {
+        Write-Status -Level "Warning" -Message "No Icon found. Please Update the Icon manually!"
+    }
+    else {
+        Write-Status -Level "Info" -Message "Icon found: $Iconpath"
+    }
+
+    if ($Iconpath) {
+        if ($PSVersionTable.PSVersion.Major -lt 7) {
+            $ImageValue = [Convert]::ToBase64String((Get-Content -Path $Iconpath -Encoding Byte))
+        }
+        else {
+            $ImageValue = [Convert]::ToBase64String((Get-Content -Path $Iconpath -AsByteStream -Raw))
+        }
+        $Icon = @{
+            "@odata.type" = "microsoft.graph.mimeContent"
+            type = $IconType
+            value = $ImageValue
+        }
+    }
+    else {
+        $Icon = $null
+    }
+
+    $Text = $Descr = ""
+    $Description = Get-ChildItem $SourceDir -Filter "Description*" -Recurse -Depth 1
+    if (-not $Description) {
+        $Description = "No Description found. Please Update the Description manually!"
+    }
+    elseif ($Description.Count -gt 1) {
+        foreach ($File in $Description) {
+            $Text = Get-Content -Path $File.FullName -Encoding UTF8 -Raw
+            $Descr += $Text + "`r`n`r`n`r`n"
+        }
+        $DescriptionText = [string]$Descr.TrimEnd("`r`n`r`n")
+    }
+    else {
+        $DescriptionText = [string](Get-Content -Path $Description.FullName -Encoding UTF8 -Raw)
+    }
+
+    return [pscustomobject]@{
+        Icon = $Icon
+        Description = $DescriptionText
+    }
+}
+
+function New-IntuneWin32AppPayload {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true)]
+        [string]$DisplayName,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Publisher,
+
+        [Parameter(Mandatory = $false)]
+        [string]$Description,
+
+        [Parameter(Mandatory = $false)]
+        [string]$Notes,
+
+        [Parameter(Mandatory = $false)]
+        [string]$Owner,
+
+        [Parameter(Mandatory = $true)]
+        [string]$InstallCommand,
+
+        [Parameter(Mandatory = $true)]
+        [string]$UninstallCommand,
+
+        [Parameter(Mandatory = $true)]
+        [string]$SetupFilePath,
+
+        [Parameter(Mandatory = $true)]
+        [string]$FileName,
+
+        [Parameter(Mandatory = $false)]
+        [hashtable]$Icon,
+
+        [Parameter(Mandatory = $true)]
+        [hashtable]$DetectionRule
+    )
+
+    return @{
+        "@odata.type" = "#microsoft.graph.win32LobApp"
+        displayName = $DisplayName
+        publisher = $Publisher
+        description = $Description
+        notes = $Notes
+        owner = $Owner
+        installCommandLine = $InstallCommand
+        uninstallCommandLine = $UninstallCommand
+        applicableArchitectures = "x64"
+        setupFilePath = $SetupFilePath
+        fileName = $FileName
+        publishingState = "notPublished"
+        msiInformation = $null
+        runAs32bit = $false
+        largeIcon = $Icon
+        allowAvailableUninstall = $true
+        rules = @($DetectionRule)
+        installExperience = @{
+            "@odata.type" = "#microsoft.graph.win32LobAppInstallExperience"
+            runAsAccount = "system"
+            deviceRestartBehavior = "basedOnReturnCode"
+        }
+        returnCodes = @(
+            @{ returnCode = 0; type = "success" }
+            @{ returnCode = 1707; type = "success" }
+            @{ returnCode = 3010; type = "softReboot" }
+            @{ returnCode = 1641; type = "hardReboot" }
+            @{ returnCode = 1618; type = "retry" }
+        )
+    }
+}
+
 function New-IntuneWin32App {
     [CmdletBinding()]
     param (
@@ -569,6 +993,12 @@ function New-IntuneWin32App {
 
         [Parameter(Mandatory = $true)]
         [string]$SourceDir,
+
+        [Parameter(Mandatory = $true)]
+        [string]$InstallCommand,
+
+        [Parameter(Mandatory = $false)]
+        [string]$UninstallCommand,
 
         [Parameter(Mandatory = $false)]
         [string]$IconName,
@@ -614,18 +1044,17 @@ function New-IntuneWin32App {
     }
     Connect-Intune -SecretFile "$PSScriptRoot\appreg-intune-CreateIntuneApp-Script-ReadWrite-Prod.json" -AppName "appreg-intune-CreateIntuneApp-Script-ReadWrite" -ApplicationPermissions $requiredApplicationPermissions -Scopes "Application.ReadWrite.All"
 
-    # Get the Metadata from the install.bat
-    $installCmd = $script:installCmd 
-    $uninstallCmd = $script:uninstallCmd
-    If([string]::IsNullOrEmpty($uninstallCmd)) {$uninstallCmd = "dummy"}
-    $installCmdString= get-content "$SourceDir\$installCmd" -Encoding UTF8
-    $displayName = ($installCmdString -match "REM DESCRIPTION").Replace("REM DESCRIPTION","").Trim()
-    $publisher = ($installCmdString -match "REM MANUFACTURER").Replace("REM MANUFACTURER","").Trim()
-    If ($installCmdString -match "REM FILENAME"){$fileName = ($installCmdString -match "REM FILENAME").Replace("REM FILENAME","").Trim()}
-    $version = ($installCmdString -match "REM VERSION").Replace("REM VERSION","").Trim()
-    If ($installCmdString -match "REM OWNER"){$owner = ($installCmdString -match "REM OWNER").Replace("REM OWNER","").Trim()}
-    If ($installCmdString -match "REM ASSETNUMBER"){$notes = ($installCmdString -match "REM ASSETNUMBER").Replace("REM ASSETNUMBER","").Trim()}
-    $IntuneWinData = Get-IntuneWinFileAndMetadata -FilePath $AppPath
+    $appMetadata = Get-IntuneWin32AppMetadata -AppPath $AppPath -SourceDir $SourceDir -InstallCommand $InstallCommand -UninstallCommand $UninstallCommand
+    $installCmd = $appMetadata.InstallCommand
+    $uninstallCmd = $appMetadata.UninstallCommand
+    $installCmdString = $appMetadata.InstallCommandContent
+    $displayName = $appMetadata.DisplayName
+    $publisher = $appMetadata.Publisher
+    $fileName = $appMetadata.FileName
+    $version = $appMetadata.Version
+    $owner = $appMetadata.Owner
+    $notes = $appMetadata.Notes
+    $IntuneWinData = $appMetadata.IntuneWinData
     $IntuneWinMetadata = $IntuneWinData.DetectionXMLContent
 
     # Create the Win32 App in Intune if it does not exist
@@ -633,193 +1062,27 @@ function New-IntuneWin32App {
 
 
     If (-not $MobileAppID){
-        # If no icon is supplied Search for the Icon
-        If ([string]::IsNullOrEmpty($IconName)){
-            Write-Status -Level "Info" -Message "Searching for Icon..."
-            $Iconpath=(Get-childitem -Path $SourceDir -Include *.png,*.jpg,*jpeg -Recurse -Depth 1| Select-Object -First 1).FullName
-        }
-        If ($Iconpath -like "*.jpg" -or $Iconpath -like "*.jpeg"){
-            $IconType = "image/jpeg"
-        }
-        elseif ($Iconpath -like "*.png"){
-            $IconType = "image/png"
-        }
-        else {
-            $Iconpath = ""
-        }
-        If ([string]::IsNullOrEmpty($Iconpath)){
-            Write-Status -Level "Warning" -Message "No Icon found. Please Update the Icon manually!"
-        }
-        else {
-            Write-Status -Level "Info" -Message "Icon found: $Iconpath"
-        }
+        $appAssets = Get-IntuneWin32AppAssets -SourceDir $SourceDir -IconName $IconName
+        $Icon = $appAssets.Icon
+        $DescriptionText = $appAssets.Description
 
-        If ($Iconpath){
-            If ($PSVersionTable.PSVersion.Major -lt 7){
-                $ImageValue = [Convert]::ToBase64String((Get-Content -Path $Iconpath -Encoding Byte))
-            }
-            else {
-                $ImageValue = [Convert]::ToBase64String((Get-Content -Path $Iconpath -AsByteStream -Raw))
-            }
-            $Icon = @{
-                "@odata.type" = "microsoft.graph.mimeContent"
-                type = $IconType
-                value =  $ImageValue
-                }
-            }
-        Else {
-            $Icon = $null
+        $detectionRule = New-IntuneWin32AppDetectionRule -InstallCommandContent $installCmdString -SourceDir $SourceDir -FileName $fileName -Version $version -DisplayName $displayName -InstallCommand $installCmd -UninstallCommand $uninstallCmd -Install $Install
+        $Rule = $detectionRule.Rule
+        $version = $detectionRule.Version
+        if ($null -eq $Rule -or $Rule -isnot [hashtable]) {
+            throw "Failed to create a valid detection rule for '$displayName'. App creation was stopped."
         }
-        $Text= $Descr = ""
-        $Description = $(get-childitem $SourceDir -Filter "Description*" -Recurse -Depth 1)
-        If (-Not $Description){
-            $Description = "No Description found. Please Update the Description manually!"
+        Write-Status -Level "Info" -Message "Rule created: $($Rule | Out-String)" -Title
+
+        $params = New-IntuneWin32AppPayload -DisplayName $displayName -Publisher $publisher -Description $DescriptionText -Notes $notes -Owner $owner -InstallCommand $installCmd -UninstallCommand $uninstallCmd -SetupFilePath $IntuneWinMetadata.ApplicationInfo.SetupFile -FileName $IntuneWinMetadata.ApplicationInfo.FileName -Icon $Icon -DetectionRule $Rule
+        if ($null -eq $params) {
+            throw "Failed to create the app payload for '$displayName'. App creation was stopped."
         }
-        elseif ($Description.Count -gt 1){ 
-            ForEach($File in $Description){
-                $Text = Get-Content -Path $File.FullName -Encoding UTF8 -Raw
-                $Descr += $Text + "`r`n`r`n`r`n"
-
-            }
-            $DescriptionText = [string]$Descr.TrimEnd("`r`n`r`n")
+        $appPayloadJson = ConvertTo-Json -InputObject $params -Depth 10
+        if ([string]::IsNullOrWhiteSpace($appPayloadJson)) {
+            throw "Failed to create the app payload for '$displayName'. App creation was stopped."
         }
-        else {
-            $DescriptionText = [string](Get-Content -Path $Description.FullName -Encoding UTF8 -Raw)
-        }
-
-        If(($installCmdString -match "(?i)msiexec(?:\.exe)?\b.*?\s/i\b").Count -gt 0){
-            $MSIName = (get-childitem $SourceDir -Filter "*.msi" -Recurse -Depth 1)[0].FullName
-            Write-Status -Level "Info" -Message "using MSI detection rule for $MSIName"
-            $MSIProductCode = (Get-AppLockerFileInformation $MSIName |Select-Object -ExpandProperty Publisher).BinaryName
-            $Rule=@{
-                "@odata.type"= "#microsoft.graph.win32LobAppProductCodeRule"
-                ruleType= "detection"
-                productCode= $MSIProductCode
-                }
-        }
-        ElseIf($fileName) {
-            Write-Status -Level "Info" -Message "Searching for File Path..."
-            $filePath = (Get-ChildItem -Path "C:\Program*"  -Recurse -ErrorAction SilentlyContinue -Include $fileName -Depth 3).FullName
-            If ($filePath){
-                $path= (Split-Path -Path $filePath -Parent)
-                $fileOrFolderName= (Split-Path -Path $filePath -Leaf)
-                $FileVersion = (Get-Item $filePath).VersionInfo.FileVersion
-                If($FileVersion -ne $version){
-                    Write-Status -Level "Warning" -Message "File Version ($version) does not match installed Version ($FileVersion), Please fix this manually! "
-                }
-            }
-            Else{
-                Write-Status -Level "Warning" -Message "No file path could be found."
-                If ($Install){
-                    $Answer = (Read-Host -Prompt "Do you want to install the Application...[Y|N]").ToUpper()
-                    If ($Answer -eq "Y"){
-                        $null = Start-Process -FilePath "$SourceDir\$installCmd" -Wait -passthru -Verb RunAs -ErrorAction SilentlyContinue
-                        $filePath = (Get-ChildItem -Path "C:\Program*"  -Recurse -ErrorAction SilentlyContinue -Include $fileName -Depth 3).FullName
-                        If ($filePath){
-                            $path= (Split-Path -Path $filePath -Parent)
-                            $fileOrFolderName= (Split-Path -Path $filePath -Leaf)
-                            $version = (Get-Item $filePath).VersionInfo.FileVersion
-                            Write-Status -Level "Info" -Message "Removing Application..."
-                            $null = Start-Process -FilePath "$SourceDir\$uninstallCmd" -Wait -passthru -Verb RunAs -ErrorAction SilentlyContinue
-                        }
-                        Else{
-                            Write-Status -Level "Error" -Message "No file path could be found. Please Update the Detection Rule manually!"
-                        }
-                        Write-Status -Level "Info" -Message "Removing Application..."
-                        $null = Start-Process -FilePath "$SourceDir\$uninstallCmd" -Wait -passthru -Verb RunAs -ErrorAction SilentlyContinue
-                    }
-                }
-            }
-
-            $Rule=@{
-                "@odata.type"= "#microsoft.graph.win32LobAppFileSystemRule"
-                "ruleType"= "detection"
-                "path"= $path
-                "fileOrFolderName"= $fileOrFolderName
-                "check32BitOn64System"= $true
-                "operationType"= "version"
-                "operator"= "greaterThanOrEqual"
-                "comparisonValue"= [string]$version
-            }
-
-        }
-        Else{
-            $registryPaths = @(
-              "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
-              "HKLM:\SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall"
-            )
-
-            $found = $false
-
-            foreach ($path in $registryPaths) {
-                $apps = Get-ChildItem -Path $path | Get-ItemProperty | Where-Object { 
-                    $_.DisplayName -like $displayName -and ($_.DisplayVersion -replace ',', '.') -eq $version 
-                }
-                if ($apps) {
-                    $found = $true
-                    $RegPath = ($apps.PSPath).Replace("Microsoft.PowerShell.Core\Registry::","")
-                    $Rule=@{
-                        "@odata.type"= "#microsoft.graph.win32LobAppRegistryRule"
-                        "ruleType"= "detection"
-                        "check32BitOn64System"= $false
-                        "keyPath"= $RegPath
-                        "valueName"= "DisplayVersion"
-                        "operationType"= "version"
-                        "operator"= "greaterThanOrEqual"
-                        "comparisonValue"= [string]$version
-                    }
-                }
-            }
-            If(!$found){
-                #Dummy file Rule
-                $Rule=@{
-                    "@odata.type"= "#microsoft.graph.win32LobAppFileSystemRule"
-                    "path"= "C:\Program Files\DummyApp\"
-                    "fileOrFolderName"= "DummyApp.exe"
-                    "check32BitOn64System"= $true
-                    "operationType"= "exists"
-                    }
-                Write-Status -Level "Error" -Message "No Registry path could be found. Please Update the Detection Rule manually!"
-            }
-        }
-
-
-        Write-Status -Level "Info" -Message "Rule created: $($Rule |Out-String)" -Title
-
-        $params = @{
-            "@odata.type" = "#microsoft.graph.win32LobApp"
-            displayName = $displayName
-            publisher = $publisher
-            description = $DescriptionText
-            notes = $notes
-            owner = $owner
-            installCommandLine = $installCmd
-            uninstallCommandLine = $uninstallCmd
-            applicableArchitectures = "x64"
-            setupFilePath = $IntuneWinMetadata.ApplicationInfo.SetupFile
-            fileName = $IntuneWinMetadata.ApplicationInfo.FileName
-            publishingState = "notPublished"
-            msiInformation = $null
-            runAs32bit = $false
-            largeIcon = $Icon
-            allowAvailableUninstall = $true
-            rules = @(
-                $Rule
-            )
-            installExperience = @{
-                "@odata.type" = "#microsoft.graph.win32LobAppInstallExperience"
-                runAsAccount = "system" #system, user
-                deviceRestartBehavior = "basedOnReturnCode" #basedOnReturnCode, allow, suppress, force
-            }
-            returnCodes  = @(
-                @{"returnCode" = 0;"type" = "success"}, `
-                @{"returnCode" = 1707;"type" = "success"}, `
-                @{"returnCode" = 3010;"type" = "softReboot"}, `
-                @{"returnCode" = 1641;"type" = "hardReboot"}, `
-                @{"returnCode" = 1618;"type" = "retry"}
-            )
-        }
-        $MobileAppID = (Invoke-MgGraphRequest -Method POST -Uri "https://graph.microsoft.com/beta/deviceAppManagement/mobileApps" -Body (Convertto-Json $params) -ContentType "application/json").id
+        $MobileAppID = (Invoke-MgGraphRequest -Method POST -Uri "https://graph.microsoft.com/beta/deviceAppManagement/mobileApps" -Body $appPayloadJson -ContentType "application/json" -ErrorAction Stop).id
         if ($MobileAppID ) {
           Write-Status -Level "Info" -Message "App created successfully. App ID: $MobileAppID"
          }
@@ -836,98 +1099,8 @@ function New-IntuneWin32App {
         }
 
 
-    # Prepare File Upload to Azure Blob Storage
-    $UploadFile =$IntuneWinData.ExtractedFile
-    $FileName = $IntuneWinMetadata.ApplicationInfo.FileName
-    $Size = [int64]$IntuneWinMetadata.ApplicationInfo.UnencryptedContentSize
-    $EncrySize = (Get-Item "$UploadFile").Length
-    $fileBody =  @{ 
-        "@odata.type" = "#microsoft.graph.mobileAppContentFile"
-        name = $FileName
-        size = $Size
-        sizeEncrypted = $EncrySize
-        manifest = $null
-        isDependency = $false
-    }
-    # Get the Content file ID
-    $fileUri = "https://graph.microsoft.com/beta/deviceAppManagement/mobileApps/$MobileAppID/microsoft.graph.win32LobApp/contentVersions/1/files"
-    Try{
-        $file = Invoke-MgGraphRequest -Method POST -Uri $fileUri -Body ($fileBody | ConvertTo-Json) 
-        $ContentFileId = $file.id
-    }
-    Catch{
-        $file = Invoke-MgGraphRequest -Method Get -Uri $fileUri
-        If($file.value.isCommitted -eq "True"){
-            Write-Status -Level "Info" -Message "This App is already committed. Please create a new App!"
-            Read-Host "Press Enter to close the window"
-            Exit 0
-        }
-        Write-Status -Level "Info" -Message "App already exists. Using existing App."
-    }
-
-    # Wait for the AzureStorageUriRequest to be processed
-    Write-Status -Level "Info" -Message "Uploading file to Azure Blob Storage..."
-    $fileUri = "https://graph.microsoft.com/beta/deviceAppManagement/mobileApps/$MobileAppID/microsoft.graph.win32LobApp/contentVersions/1/files/$ContentFileId";
-    $file = Wait-ForFileProcessing $fileUri "AzureStorageUriRequest"
-       
-    # Upload the file to Azure Blob Storage 
-    #  Get the SAS Token and Storage Account Name
-    [System.Uri]$uriObject = $file.azureStorageUri
-
-    # extract Storage Account Name from Host
-    $storageAccountName = $uriObject.DnsSafeHost.Split('.')[0]
-
-    # SAS-Token (without the leading ?)
-    $sasToken = $uriObject.Query.TrimStart('?')
-
-    # extract Container and Blob-Path
-    $segments = $uriObject.AbsolutePath.TrimStart('/').Split('/')
-    $container = $segments[0]
-    $blobPath = ($segments[1..($segments.Length-1)] -join '/')
-
-    # build storage context
-    $storageContext = New-AzStorageContext -StorageAccountName $storageAccountName -SasToken $sasToken
-
-    # suppress progress messages during the upload
-    $oldProgressPreference = $ProgressPreference
-    $ProgressPreference = 'SilentlyContinue'
-    try {
-        $blobUpload = Set-AzStorageBlobContent -File $UploadFile -Container $container -Context $storageContext -Blob $blobPath -Force
-    }
-    finally {
-        $ProgressPreference = $oldProgressPreference
-    }
-
-    Write-Status -Level "Info" -Message "Upload finished! Details: Name $($blobUpload.Name), ContentType $($blobUpload.ContentType), Length $($blobUpload.Length), LastModified $($blobUpload.LastModified)"
-
-    # Commit the file
-    $fileEncryptionInfo = @{    
-        fileEncryptionInfo = @{
-            encryptionKey = $IntuneWinMetadata.ApplicationInfo.EncryptionInfo.EncryptionKey
-            macKey = $IntuneWinMetadata.ApplicationInfo.EncryptionInfo.macKey
-            initializationVector = $IntuneWinMetadata.ApplicationInfo.EncryptionInfo.initializationVector
-            mac = $IntuneWinMetadata.ApplicationInfo.EncryptionInfo.mac
-            profileIdentifier = "ProfileVersion1";
-            fileDigest = $IntuneWinMetadata.ApplicationInfo.EncryptionInfo.fileDigest
-            fileDigestAlgorithm = $IntuneWinMetadata.ApplicationInfo.EncryptionInfo.fileDigestAlgorithm
-        }
-    }
-    $commitFileUri = "https://graph.microsoft.com/beta/deviceAppManagement/mobileApps/$MobileAppID/microsoft.graph.win32LobApp/contentVersions/1/files/$ContentFileId/commit"
-    try{
-        Invoke-MgGraphRequest -Method POST $commitFileUri -Body ($fileEncryptionInfo |ConvertTo-Json -Depth 10)
-    }
-    catch{
-        Write-Status -Level "Error" -Message "Failed to commit file to Azure Blob Storage. Status code: $($_.Exception.Message)"
-        Read-Host "Press Enter to close the window"
-        Exit 1
-    }
-    Write-Status -Level "Info" -Message "Waiting for the file to be committed..."
-
-    $file = Wait-ForFileProcessing $fileUri "commitFile"
-
-    If($file.uploadState -ne "commitFileSuccess"){
-        throw "Failed to commit file to Azure Blob Storage. Status code: $($file.uploadState)"
-    }   
+    $UploadFile = $IntuneWinData.ExtractedFile
+    Publish-IntuneWin32AppContent -MobileAppId $MobileAppID -UploadFile $UploadFile -IntuneWinMetadata $IntuneWinMetadata
 
     # Commit the App
     $commitAppBody = @{ 
@@ -1114,15 +1287,18 @@ function Connect-Intune{
 					}
 					catch {
 						Write-Status -Level "Error" -Message "Device authentication failed: $($_.Exception.Message)"
+						Read-Host "Press Enter to close the window"
 						Exit 1
 					}
 				}
 				else {
 					Write-Status -Level "Error" -Message "Your Microsoft.Graph.Authentication module does not support device authentication.`nPlease update the module or use a secret file with -SecretFile." -Title
+					Read-Host "Press Enter to close the window"
 					Exit 1
 				}
 			}
 			else {
+				Read-Host "Press Enter to close the window"
 				Exit 1
 			}
 		}
@@ -1136,6 +1312,7 @@ function Connect-Intune{
 		}
 		catch {
 			Write-Status -Level "Error" -Message "Failed to query applications in Microsoft Graph: $($_.Exception.Message)"
+			Read-Host "Press Enter to close the window"
 			Exit 1
 		}
 		If ($AppObj){
@@ -1151,6 +1328,7 @@ function Connect-Intune{
 			}
 			Else{
 				Write-Status -Level "Error" -Message "Failed to create the App. Please check the parameters and try again."
+				Read-Host "Press Enter to close the window"
 				Exit 1  
 			}
 		}
@@ -1199,6 +1377,7 @@ function Connect-Intune{
 		}
 		catch{
 			Write-Status -Level "Error" -Message "Failed to update the Required Resource Access. Status code: $($_.Exception.Message)"
+			Read-Host "Press Enter to close the window"
 			Exit 1
 		}
 
@@ -1266,8 +1445,22 @@ try {
         throw "The provided source directory does not exist: $sourceDir, Drag and drop a folder onto the script."
     }
     
-    #Get the commands for Install and uninstall
-    $InstallCmd = (Get-ChildItem -Path $sourceDir -Recurse -Depth 1 -File -Include "Install*.cmd","Install*.bat" | Select-Object -First 1).Name
+    # Get the commands for Install and uninstall
+    if ([string]::IsNullOrWhiteSpace($InstallCmd)) {
+        $InstallCmd = (Get-ChildItem -Path $sourceDir -Recurse -Depth 1 -File -Include "Install*.cmd","Install*.bat" | Select-Object -First 1).Name
+    }
+    if ([string]::IsNullOrWhiteSpace($InstallCmd)) {
+        throw "No install command file was found in '$sourceDir'. Specify one with -InstallCmd."
+    }
+    $installCommandPath = if ([System.IO.Path]::IsPathRooted($InstallCmd)) {
+        $InstallCmd
+    }
+    else {
+        Join-Path -Path $sourceDir -ChildPath $InstallCmd
+    }
+    if (-not (Test-Path -LiteralPath $installCommandPath -PathType Leaf)) {
+        throw "Install command file not found: $installCommandPath"
+    }
     $UninstallCmd = (Get-ChildItem -Path $sourceDir -Recurse -Depth 1 -File -Include "Uninstall*.cmd","Uninstall*.bat" | Select-Object -First 1).Name
 
     # Create Output directory silently
@@ -1346,7 +1539,14 @@ Write-Status -level Info -Message "intunewin generated successfully!" -Title
 
 # Upload the generated .intunewin file to Intune and generate a application.
 If ($Upload){
-    New-IntuneWin32App -AppPath $renamedFile -SourceDir $sourceDir -IconName $IconName -Install $Install -GenerateGroups $GenerateGroups -AssignGroups $AssignGroups -Supersedence $Supersedence -SupersedenceTargetAppId $SupersedenceTargetAppId -SupersedenceType $SupersedenceType -SupersedenceTargetType $SupersedenceTargetType
+    try {
+        New-IntuneWin32App -AppPath $renamedFile -SourceDir $sourceDir -InstallCommand $InstallCmd -UninstallCommand $UninstallCmd -IconName $IconName -Install $Install -GenerateGroups $GenerateGroups -AssignGroups $AssignGroups -Supersedence $Supersedence -SupersedenceTargetAppId $SupersedenceTargetAppId -SupersedenceType $SupersedenceType -SupersedenceTargetType $SupersedenceTargetType -ErrorAction Stop
+    }
+    catch {
+        Write-Status -Level "Error" -Message "Intune upload failed: $($_.Exception.Message)" -Title
+        Read-Host "Press Enter to close the window"
+        exit 1
+    }
 }
 Read-Host "Press Enter to close the window"
 exit 0
