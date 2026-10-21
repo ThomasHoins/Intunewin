@@ -36,7 +36,7 @@
     Specifies whether to upload the generated .intunewin file to Intune. Default is $true.  
 
 .PARAMETER UpdateModules
-    Specifies whether to install or update all required modules before uploading. Default is $true.
+    Checks for module updates and installs only missing or outdated required modules. Default is $true.
 
 .PARAMETER GenerateGroups
     Specifies whether to create Entra security groups from the group template. Default is $true.
@@ -942,20 +942,33 @@ function Install-RequiredModules {
         'Microsoft.Graph.Beta.Devices.CorporateManagement'
     )
 
-    if ($UpdateModules) {
-        $modulesToInstall = $requiredModules
-        Write-Status -Level "Info" -Message "Installing or updating required modules..."
-    }
-    else {
-        $installedModules = @(Get-Module -Name $requiredModules -ListAvailable | Select-Object -ExpandProperty Name -Unique)
-        $modulesToInstall = @($requiredModules | Where-Object { $installedModules -notcontains $_ })
-        if ($modulesToInstall.Count -eq 0) {
-            Write-Status -Level "Info" -Message "All required modules are already installed."
-            return
+    $availableModules = @(Get-Module -Name $requiredModules -ListAvailable)
+    $modulesToInstall = foreach ($moduleName in $requiredModules) {
+        $installedModule = $availableModules |
+            Where-Object Name -EQ $moduleName |
+            Sort-Object Version -Descending |
+            Select-Object -First 1
+
+        if (-not $installedModule) {
+            $moduleName
+            continue
         }
-        Write-Status -Level "Info" -Message "Installing missing required modules..."
+
+        if ($UpdateModules) {
+            $galleryModule = Find-Module -Name $moduleName -ErrorAction Stop
+            if ([version]$galleryModule.Version -gt [version]$installedModule.Version) {
+                $moduleName
+            }
+        }
     }
 
+    if (-not $modulesToInstall) {
+        Write-Status -Level "Info" -Message "All required modules are already installed and up to date."
+        return
+    }
+
+    $action = if ($UpdateModules) { "Installing or updating" } else { "Installing missing" }
+    Write-Status -Level "Info" -Message "$action required modules: $($modulesToInstall -join ', ')"
     Install-Module -Name $modulesToInstall -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop
 }
 

@@ -42,6 +42,7 @@ Initial date: 14.01.2025
 - 21.10.2026: Translated remaining German comments and messages to English; updated the script version to 2.10.3.
 - 21.10.2026: Allowed detection rule generation to fall back when install command content is unavailable.
 - 21.10.2026: Moved required module installation outside the app creation function and added optional module updates.
+- 21.10.2026: Install only required modules that are missing or have a newer gallery version.
 - 21.10.2026: Passed install and uninstall commands explicitly to the app upload workflow and validated the install script before connecting to Graph.
 
 ## Known issue
